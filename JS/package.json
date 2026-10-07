@@ -1,0 +1,24 @@
+{
+  "name": "pi-durable-kit-bridge",
+  "private": true,
+  "type": "module",
+  "description": "JavaScriptCore bundle of @earendil-works/pi-durable for PiDurableKit",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "build": "npm run typecheck && node build.mjs",
+    "update": "node scripts/update.mjs",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0"
+  },
+  "devDependencies": {
+    "core-js": "^3.45.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "web-streams-polyfill": "^4.1.0"
+  },
+  "license": "CC0-1.0"
+}

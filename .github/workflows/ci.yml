@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # Xcode 27, for the example's JSON project format (project.xcproj).
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: JS/package-lock.json
+
+      - name: Build the JavaScript bundle
+        working-directory: JS
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Check the committed bundle is up to date
+        run: git diff --exit-code -- Sources/PiDurableKit/Resources Sources/PiDurableKit/Generated JS/src/versions.ts
+
+      - name: Test (macOS)
+        env:
+          # Optional: real requests to these providers run only when the secrets are set.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: swift test
+
+      - name: Test (iOS Simulator)
+        run: |
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['name'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          xcodebuild test -scheme PiDurableKit -destination "platform=iOS Simulator,name=$DEVICE" -quiet
+
+      - name: Build the documentation
+        run: xcodebuild docbuild -scheme PiDurableKit -destination "generic/platform=iOS Simulator" OTHER_DOCC_FLAGS="--warnings-as-errors" -quiet

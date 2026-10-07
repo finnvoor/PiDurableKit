@@ -1,0 +1,70 @@
+name: Update pi-durable
+
+# Checks npm for a new @earendil-works/pi-durable release, rebuilds the JavaScriptCore bundle against it,
+# runs the test suite, and opens a pull request with the result.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "pi-durable version (default: latest)"
+        required: false
+        default: latest
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    # Xcode 27, for the example's JSON project format (project.xcproj).
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Update and rebuild
+        id: update
+        working-directory: JS
+        run: |
+          npm ci
+          node scripts/update.mjs "${{ github.event.inputs.version || 'latest' }}"
+          npm test
+
+      - name: Test (macOS)
+        env:
+          # Optional: real requests to these providers run only when the secrets are set.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        id: test
+        if: steps.update.outputs.changed == 'true'
+        continue-on-error: true
+        run: swift test
+
+      - name: Test (iOS Simulator)
+        id: test-ios
+        if: steps.update.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['name'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          xcodebuild test -scheme PiDurableKit -destination "platform=iOS Simulator,name=$DEVICE" -quiet
+
+      - name: Open pull request
+        if: steps.update.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: update/pi-durable-${{ steps.update.outputs.version }}
+          commit-message: Update pi-durable to ${{ steps.update.outputs.version }}
+          title: Update pi-durable to ${{ steps.update.outputs.version }}
+          draft: ${{ steps.test.outcome != 'success' || steps.test-ios.outcome != 'success' }}
+          body: |
+            Updates the bundled `@earendil-works/pi-durable` from ${{ steps.update.outputs.previous }} to ${{ steps.update.outputs.version }}, with the `pi-ai` and `chord` releases it depends on, and rebuilds `pi-durable.js`.
+
+            - macOS tests: **${{ steps.test.outcome }}**
+            - iOS Simulator tests: **${{ steps.test-ios.outcome }}**
+
+            ${{ (steps.test.outcome != 'success' || steps.test-ios.outcome != 'success') && 'Tests failed, so this pull request is a draft: the bridge (`JS/src/bridge.ts`) or the Swift API probably needs to follow an upstream change.' || 'All tests passed.' }}
