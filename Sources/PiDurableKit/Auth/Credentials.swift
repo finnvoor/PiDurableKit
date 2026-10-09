@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// A stored provider credential: an API key, or OAuth tokens from ``Models/login(to:interaction:installationID:)``.
+/// A stored provider credential: an API key, or OAuth tokens from ``Models/login(to:interaction:installationID:agentName:)``.
 ///
 /// The JSON shape is pi-ai's (and pi's `auth.json`): `{ "type": "api_key", "key": … }` or
 /// `{ "type": "oauth", "access": …, "refresh": …, "expires": … }`, plus provider-specific fields.

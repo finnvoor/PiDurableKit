@@ -4,7 +4,7 @@ Use a Claude, ChatGPT, GitHub Copilot, or OpenRouter subscription instead of an 
 
 ## Overview
 
-Providers with an OAuth sign-in report it in ``ProviderInfo/oauth``. ``Models/login(to:interaction:installationID:)``
+Providers with an OAuth sign-in report it in ``ProviderInfo/oauth``. ``Models/login(to:interaction:installationID:agentName:)``
 runs pi-ai's sign-in flow: the provider's page opens in an `ASWebAuthenticationSession`, its redirect reaches a loopback
 server inside the app, and the tokens are stored in ``Models/credentials`` and refreshed automatically.
 

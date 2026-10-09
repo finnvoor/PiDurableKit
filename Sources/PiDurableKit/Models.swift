@@ -11,7 +11,7 @@ import os
 ///
 /// Every built-in pi-ai provider is registered by default (Anthropic, OpenAI, Google, OpenRouter, …). There are no
 /// environment variables on iOS, so store each provider's credential in ``credentials`` (or with
-/// ``setAPIKey(_:for:)``), or sign in to a subscription with ``login(to:interaction:installationID:)``.
+/// ``setAPIKey(_:for:)``), or sign in to a subscription with ``login(to:interaction:installationID:agentName:)``.
 public final class Models: Sendable {
     let runtime: Runtime
     let id: Int
@@ -186,7 +186,7 @@ public final class Models: Sendable {
 public struct ProviderInfo: Decodable, Sendable, Hashable, Identifiable {
     public let id: ProviderID
     public let name: String
-    /// The provider's OAuth sign-in, if it has one; see ``Models/login(to:interaction:installationID:)``.
+    /// The provider's OAuth sign-in, if it has one; see ``Models/login(to:interaction:installationID:agentName:)``.
     public let oauth: OAuthInfo?
 }
 
