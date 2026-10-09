@@ -529,6 +529,8 @@ actor Engine {
 
     private func setTimer(id: Int, delay: Double) {
         timers[id]?.cancel()
+        // JavaScript can pass Infinity, NaN, or a huge delay, and `Int(_:)` traps on those.
+        let delay = delay.isNaN ? 0 : min(max(0, delay), Double(Int32.max))
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.isolated { engine in
@@ -538,7 +540,7 @@ actor Engine {
             }
         }
         timers[id] = item
-        queue.asyncAfter(deadline: .now() + .milliseconds(Int(max(0, delay))), execute: item)
+        queue.asyncAfter(deadline: .now() + .milliseconds(Int(delay)), execute: item)
     }
 
     // MARK: Network callbacks
