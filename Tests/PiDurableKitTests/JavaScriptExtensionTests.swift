@@ -57,6 +57,70 @@ module.exports = defineExtension({
         #expect(prompt.contains("Use the roll tool for dice."))
     }
 
+    @Test func timersAcceptDelaysNodeAccepts() async throws {
+        let source = #"""
+        const { defineExtension, defineTool } = require("@earendil-works/pi-durable");
+        const { Type } = require("@earendil-works/pi-ai");
+        module.exports = defineExtension({
+            name: "timers",
+            tools: [defineTool({
+                name: "arm",
+                description: "Arm timers with extreme delays",
+                parameters: Type.Object({}),
+                execute: async () => {
+                    for (const delay of [Infinity, NaN, -1, 1e300]) clearTimeout(setTimeout(() => {}, delay));
+                    return { content: [{ type: "text", text: "armed" }] };
+                },
+            })],
+        });
+        """#
+        let setup = try await FauxSetup.make(extensions: [Extension("timers", javaScript: source)])
+        try await setup.faux.append(.toolCall("arm", [:]))
+        try await setup.faux.append(.text("Done"))
+        let root = try await setup.root()
+        _ = try await ask(root, "Arm the timers")
+        let results = try await root.view().entries.compactMap(\.toolResult)
+        #expect(results.first?.text == "armed")
+        try await setup.harness.close()
+    }
+
+    @Test func outOfRangeTimerDelaysFireAtOnceAsInNode() async throws {
+        // Node runs a timer whose delay isn't 1 to 2³¹−1 ms after 1 ms, Infinity included.
+        let source = #"""
+        const { defineExtension, defineTool } = require("@earendil-works/pi-durable");
+        const { Type } = require("@earendil-works/pi-ai");
+        module.exports = defineExtension({
+            name: "timers",
+            tools: [defineTool({
+                name: "wait",
+                description: "Wait for timers with out-of-range delays",
+                parameters: Type.Object({}),
+                execute: async () => {
+                    await Promise.all([Infinity, NaN, -1, 1e300].map((delay) => new Promise((resolve) => setTimeout(resolve, delay))));
+                    return { content: [{ type: "text", text: "fired" }] };
+                },
+            })],
+        });
+        """#
+        let setup = try await FauxSetup.make(extensions: [Extension("timers", javaScript: source)])
+        try await setup.faux.append(.toolCall("wait", [:]))
+        try await setup.faux.append(.text("Done"))
+        let root = try await setup.root()
+        try await withTimeout(5) { _ = try await ask(root, "Wait for the timers") }
+        #expect(try await root.view().entries.compactMap(\.toolResult).first?.text == "fired")
+        try await setup.harness.close()
+    }
+
+    @Test func timerDelaysAreClampedToWhatSwiftAccepts() {
+        // The JavaScript side follows Node, so out-of-range delays never reach the host; its own guard is tested
+        // directly.
+        #expect(Engine.timerDelay(.nan) == 0)
+        #expect(Engine.timerDelay(-1) == 0)
+        #expect(Engine.timerDelay(250) == 250)
+        #expect(Engine.timerDelay(.infinity) == Double(Int32.max))
+        #expect(Engine.timerDelay(1e300) == Double(Int32.max))
+    }
+
     @Test func extensionsCannotReachTheHostBridge() async throws {
         let setup = try await FauxSetup.make(extensions: [Extension("dice", javaScript: diceSource)])
         try await setup.faux.append(.toolCall("inspect_globals", [:]))
