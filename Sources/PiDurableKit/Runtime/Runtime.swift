@@ -555,7 +555,12 @@ actor Engine {
     }
 
     func deliverData(id: Int, data: Data) {
-        guard let context, let array = TypedArray.makeUint8Array(data, in: context) else { return }
+        guard let context, let array = TypedArray.makeUint8Array(data, in: context) else {
+            // Dropping the chunk would hand JavaScript a body with a hole in it and no error.
+            network.cancel(id: id)
+            deliverError(id: id, message: "Could not pass \(data.count) bytes of the response to JavaScript")
+            return
+        }
         callbacks?.invokeMethod("fetchData", withArguments: [id, array])
         reportException()
     }
