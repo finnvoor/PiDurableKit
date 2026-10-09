@@ -6,10 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push to the same branch or pull request supersedes the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    # Xcode 27, for the example's JSON project format (project.xcproj).
+    # Xcode 27, for the iOS 27 and macOS 27 SDKs.
     runs-on: xcode-27
+    # A typical run takes about two minutes; a hang fails instead of holding the runner.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -36,10 +43,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: swift test
 
-      - name: Test (iOS Simulator)
-        run: |
-          DEVICE=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['name'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
-          xcodebuild test -scheme PiDurableKit -destination "platform=iOS Simulator,name=$DEVICE" -quiet
-
-      - name: Build the documentation
+      # The tests run on macOS only: they exercise the same code on iOS, and booting a simulator took most of the run.
+      # Building the documentation for iOS compiles the package for iOS, so iOS-only build errors still fail.
+      - name: Build the documentation (and the package for iOS)
         run: xcodebuild docbuild -scheme PiDurableKit -destination "generic/platform=iOS Simulator" OTHER_DOCC_FLAGS="--warnings-as-errors" -quiet
