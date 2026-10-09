@@ -41,6 +41,14 @@ public struct Storage: Sendable {
         }
     }
 
+    /// The file system path two harnesses must not share, if the storage has one.
+    var lockPath: String? {
+        switch kind {
+        case .sqlite(let url), .jsonl(let url, _): url.path(percentEncoded: false)
+        case .memory, .database: nil
+        }
+    }
+
     var specification: BridgeArguments {
         get throws {
             switch kind {
@@ -133,17 +141,20 @@ public struct EnvironmentTarget: Sendable {
 public final class Harness: Sendable {
     public let models: Models
     let id: Int
+    private let storageLock: StorageLock?
     var engine: Engine { models.runtime.engine }
 
-    private init(models: Models, id: Int) {
+    private init(models: Models, id: Int, storageLock: StorageLock?) {
         self.models = models
         self.id = id
+        self.storageLock = storageLock
     }
 
     /// Opens a harness over `storage`.
     ///
     /// - Parameters:
-    ///   - storage: Where to keep conversations. Only one harness may use a storage at a time.
+    ///   - storage: Where to keep conversations. Only one harness may use a storage at a time: opening a SQLite or
+    ///     JSONL storage that another harness has open, in this process or another, throws.
     ///   - models: Model access.
     ///   - extensions: Extensions to install, in order. Change them later with ``install(_:)``.
     ///   - settings: Run policy shared by every conversation.
@@ -168,7 +179,8 @@ public final class Harness: Sendable {
         try await models.prepare()
         let engine = models.runtime.engine
         let id = await engine.makeObjectID()
-        let harness = Harness(models: models, id: id)
+        let lock = try storage.lockPath.map { try StorageLock(storagePath: $0) }
+        let harness = Harness(models: models, id: id, storageLock: lock)
         engine.host.registerHarness(
             id, extensions: extensions,
             callbacks: HarnessCallbacks(
@@ -192,6 +204,7 @@ public final class Harness: Sendable {
                 ])
         } catch {
             engine.host.removeHarness(id)
+            lock?.release()
             throw error
         }
         return harness
@@ -463,6 +476,7 @@ public final class Harness: Sendable {
 
     /// Settles admitted work and closes the storage. Unfinished runs stay pending until the storage is opened again.
     public func close() async throws {
+        defer { storageLock?.release() }
         try await perform("harness.close")
         engine.host.removeHarness(id)
     }
