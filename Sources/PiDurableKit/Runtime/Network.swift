@@ -6,11 +6,13 @@ import Foundation
 final class Network: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private unowned let engine: Engine
     private var session: URLSession!
+    private let idleTimeout: TimeInterval
     private var tasks: [Int: URLSessionDataTask] = [:]
     private var ids: [Int: Int] = [:] // task identifier → fetch id
 
-    init(engine: Engine, configuration: URLSessionConfiguration) {
+    init(engine: Engine, configuration: URLSessionConfiguration, idleTimeout: TimeInterval) {
         self.engine = engine
+        self.idleTimeout = idleTimeout
         super.init()
         let delegateQueue = OperationQueue()
         delegateQueue.maxConcurrentOperationCount = 1
@@ -26,7 +28,7 @@ final class Network: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
-        request.timeoutInterval = 60 * 60
+        request.timeoutInterval = idleTimeout
         let headers = (try? JSONDecoder().decode([[String]].self, from: Data(headersJSON.utf8))) ?? []
         for pair in headers where pair.count == 2 {
             request.addValue(pair[1], forHTTPHeaderField: pair[0])
