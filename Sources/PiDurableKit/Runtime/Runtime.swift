@@ -527,10 +527,14 @@ actor Engine {
         context.exception = exception
     }
 
+    /// A delay `Int(_:)` accepts. JavaScript can pass Infinity, NaN, or a huge delay, and `Int(_:)` traps on those.
+    static func timerDelay(_ delay: Double) -> Double {
+        delay.isNaN ? 0 : min(max(0, delay), Double(Int32.max))
+    }
+
     private func setTimer(id: Int, delay: Double) {
         timers[id]?.cancel()
-        // JavaScript can pass Infinity, NaN, or a huge delay, and `Int(_:)` traps on those.
-        let delay = delay.isNaN ? 0 : min(max(0, delay), Double(Int32.max))
+        let delay = Self.timerDelay(delay)
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.isolated { engine in

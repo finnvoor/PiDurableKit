@@ -84,6 +84,15 @@ module.exports = defineExtension({
         try await setup.harness.close()
     }
 
+    @Test func timerDelaysAreClampedToWhatSwiftAccepts() {
+        // The JavaScript side already turns NaN and negatives into 0, so the host's own guard is tested directly.
+        #expect(Engine.timerDelay(.nan) == 0)
+        #expect(Engine.timerDelay(-1) == 0)
+        #expect(Engine.timerDelay(250) == 250)
+        #expect(Engine.timerDelay(.infinity) == Double(Int32.max))
+        #expect(Engine.timerDelay(1e300) == Double(Int32.max))
+    }
+
     @Test func extensionsCannotReachTheHostBridge() async throws {
         let setup = try await FauxSetup.make(extensions: [Extension("dice", javaScript: diceSource)])
         try await setup.faux.append(.toolCall("inspect_globals", [:]))
