@@ -41,6 +41,23 @@ extension MockServerTests {
         try await harness.close()
     }
 
+    @Test func requestsUseTheConfiguredIdleTimeout() async throws {
+        let completion = #"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#
+        MockServer.handle(host: "idle.test") { _ in .init(chunks: [.sse(completion), "data: [DONE]\n\n"]) }
+        for (configured, expected) in [(nil, 300.0), (42.0, 42.0)] as [(Double?, Double)] {
+            var configuration = Runtime.Configuration(urlSessionConfiguration: MockServer.configuration)
+            if let configured { configuration.requestIdleTimeout = configured }
+            let models = Models(builtinProviders: false, runtime: Runtime(configuration: configuration))
+            try await models.register(CustomProvider(
+                id: "idle", baseURL: URL(string: "https://idle.test/v1")!, apiKey: "key", models: [.init(id: "m")]))
+            let harness = try await Harness.open(models: models)
+            let root = try await harness.root(agent: AgentChange(model: ModelRef(provider: "idle", modelId: "m")))
+            _ = try await ask(root, "Hi")
+            #expect(MockServer.requests(to: "idle.test").last?.timeout == expected)
+            try await harness.close()
+        }
+    }
+
     @Test func providerAndModelHeaders() async throws {
         let completion = #"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}"#
         MockServer.handle(host: "headers.test") { _ in .init(chunks: [.sse(completion), "data: [DONE]\n\n"]) }

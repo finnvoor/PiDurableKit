@@ -48,6 +48,8 @@ final class MockServer: URLProtocol, @unchecked Sendable {
         let method: String
         let headers: [String: String]
         let body: Data
+        /// How long the request may go without receiving bytes.
+        var timeout: TimeInterval = 0
         var json: JSONValue? { try? JSONDecoder().decode(JSONValue.self, from: body) }
         /// A header, by case-insensitive name.
         func header(_ name: String) -> String? {
@@ -90,7 +92,8 @@ final class MockServer: URLProtocol, @unchecked Sendable {
         }
         let recorded = Request(
             url: request.url!, method: request.httpMethod ?? "GET",
-            headers: request.allHTTPHeaderFields ?? [:], body: body)
+            headers: request.allHTTPHeaderFields ?? [:], body: body,
+            timeout: request.timeoutInterval)
         let handler = Self.lock.withLock {
             Self.requests.append(recorded)
             return Self.handlers[request.url!.host() ?? ""]
