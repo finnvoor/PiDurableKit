@@ -11,6 +11,7 @@ import type {
 	TaskRuntime,
 	ToolExecutionApi,
 } from "@earendil-works/pi-durable";
+import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { type Args, closeHandle, emit, finish, handle, host, openHandle, openStream, register } from "./core.ts";
 import { draftOf, readDoc, watchArguments } from "./docs.ts";
 import { describeAgent, describeTask, type HarnessState, taskDefinition } from "./state.ts";
@@ -59,6 +60,69 @@ function taskOwner(scope: Scope): Pick<AnyRuntime, "getTask" | "waitForTask" | "
 	return owner as Pick<AnyRuntime, "getTask" | "waitForTask" | "agent" | "conversation">;
 }
 
+function toolOf(scope: Scope): ToolExecutionApi {
+	if (scope.tool === undefined) throw new Error("Only tool calls can do this");
+	return scope.tool;
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** A result for a call that could not run, as the harness records one. */
+function failed(code: string, error: unknown) {
+	return { content: [], isError: true, diagnostics: [{ severity: "error", code, message: errorText(error) }] };
+}
+
+/**
+ * Runs a tool the calling conversation is offered as the harness runs a tool call: repairs and validates the arguments,
+ * then calls `execute()` with the calling tool's `api`. What the called tool reports (output, details, diagnostics)
+ * goes into its own result instead of the caller's.
+ */
+async function callTool(api: ToolExecutionApi, name: string, raw: unknown, context: Context) {
+	const agent = await api.agent(context);
+	const tool = agent.tools.find((candidate) => candidate.name === name);
+	if (tool === undefined) throw new Error(`Tool ${name} is not offered to this conversation`);
+	let args: unknown;
+	try {
+		const prepared = tool.prepareArguments === undefined ? raw : tool.prepareArguments(raw);
+		args = validateToolArguments(tool, { type: "toolCall", id: api.callId, name, arguments: prepared as Args });
+	} catch (error) {
+		return failed("invalid_arguments", error);
+	}
+	const output: string[] = [];
+	const diagnostics: unknown[] = [];
+	let details: JsonValue | undefined;
+	const decoder = new TextDecoder();
+	const reporting = {
+		...api,
+		output: (chunk: string | Uint8Array) => {
+			output.push(typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
+		},
+		outputWindow: undefined,
+		diagnostic: (diagnostic: unknown) => {
+			diagnostics.push(diagnostic);
+		},
+		details: async (value: JsonValue) => {
+			details = value;
+		},
+	} as ToolExecutionApi;
+	let result: Args;
+	try {
+		result = (await tool.execute(args as never, reporting, context)) as Args;
+	} catch (error) {
+		if (context.abortSignal?.aborted) throw error;
+		return failed("tool_error", error);
+	}
+	const streamed = output.join("") + decoder.decode();
+	return {
+		...result,
+		content: result.content ?? (streamed === "" ? [] : [{ type: "text", text: streamed }]),
+		...(result.details === undefined && details !== undefined ? { details } : {}),
+		diagnostics: [...diagnostics, ...(result.diagnostics ?? [])],
+	};
+}
+
 function runtimeOf(scope: Scope): AnyRuntime {
 	if (scope.runtime === undefined) throw new Error("Only task phases can do this");
 	return scope.runtime;
@@ -103,6 +167,16 @@ register({
 		return value ?? null;
 	},
 	"scope.agent": async (args, context) => describeAgent(await taskOwner(scopeOf(args)).agent(context)),
+	"scope.tools": async (args, context) => {
+		const agent = await toolOf(scopeOf(args)).agent(context);
+		return agent.tools.map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+			extension: agent.extensions.find((extension) => extension.tools?.some((candidate) => candidate.name === tool.name))?.name ?? null,
+		}));
+	},
+	"scope.callTool": (args, context) => callTool(toolOf(scopeOf(args)), args.name, args.arguments ?? {}, context),
 	"scope.getTask": async (args, context) => describeTask(await taskOwner(scopeOf(args)).getTask(args.task as TaskId, context)),
 	"scope.waitForTask": async (args, context) => describeTask(await taskOwner(scopeOf(args)).waitForTask(args.task as TaskId, context)),
 	"scope.conversation": async (args, context) => {
