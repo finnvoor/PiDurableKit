@@ -123,6 +123,61 @@ import Testing
         #expect(try await answer(of: second).text == "Second answer.")
     }
 
+    @Test func steerJoinsTheRunAfterTheToolRound() async throws {
+        // The tool runs until the test lets it finish, so the steer arrives during the tool round.
+        let (release, releaser) = AsyncStream<Void>.makeStream()
+        let gate = Tool("gate", description: "Waits") { _ in
+            for await _ in release { break }
+            return "opened"
+        }
+        let setup = try await FauxSetup.make(extensions: [Extension("gate", tools: [gate])])
+        let requests = Requests()
+        try await setup.faux.respond { messages, count in
+            await requests.append(messages)
+            return count == 1 ? FauxResponse(.toolCall("gate", [:])) : FauxResponse(.text("Lisbon it is."))
+        }
+        let root = try await setup.root()
+
+        let first = try await root.submit("Plan a weekend in Porto")
+        try await withTimeout {
+            for try await view in root.views() where view.live.tools.contains(where: { $0.status == .running }) {
+                break
+            }
+        }
+        let steer = try await root.submit("Actually, Lisbon", whenBusy: .steer)
+        #expect(try await steer.status().status == .queued)
+        releaser.yield()
+
+        #expect(try await answer(of: steer).text == "Lisbon it is.")
+        _ = try await first.wait()
+        // One run answered both: the model's second request has the steer after the tool result.
+        let all = await requests.all
+        #expect(all.count == 2)
+        let last = try #require(all.last)
+        guard case .user(let user)? = last.last, case .toolResult? = last.dropLast().last else {
+            Issue.record("Expected the tool result and then the steer, got \(last)")
+            return
+        }
+        #expect(user.text == "Actually, Lisbon")
+    }
+
+    @Test func steerDuringATextReplyGetsItsOwnAnswer() async throws {
+        let setup = try await FauxSetup.make(tokensPerSecond: 100)
+        try await setup.faux.append(.text("First answer is a little long so the run stays busy."))
+        try await setup.faux.append(.text("Steered answer."))
+        let root = try await setup.root()
+
+        let first = try await root.submit("one")
+        let steer = try await root.submit("two", whenBusy: .steer)
+        #expect(try await answer(of: first).text == "First answer is a little long so the run stays busy.")
+        #expect(try await answer(of: steer).text == "Steered answer.")
+    }
+
+    private actor Requests {
+        var all: [[Message]] = []
+        func append(_ messages: [Message]) { all.append(messages) }
+    }
+
     @Test func rejectWhenBusy() async throws {
         let setup = try await FauxSetup.make(tokensPerSecond: 50)
         try await setup.faux.append(.text("A slow answer that keeps the conversation busy for a while."))
