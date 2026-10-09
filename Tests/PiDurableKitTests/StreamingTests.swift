@@ -222,6 +222,18 @@ let todosDocument = Document("app.todos", initial: Todos())
         try await setup.harness.close()
     }
 
+    @Test func aStorageOpensInOneHarnessAtATime() async throws {
+        let directory = temporaryDirectory()
+        for storage in [Storage.sqlite(at: directory.appending(path: "agent.sqlite")), .jsonl(at: directory.appending(path: "log"))] {
+            let first = try await FauxSetup.make(storage)
+            await #expect(throws: PiDurableError.self) { try await FauxSetup.make(storage) }
+            try await first.harness.close()
+            // Closing releases the lock, and a failed open took none.
+            let second = try await FauxSetup.make(storage)
+            try await second.harness.close()
+        }
+    }
+
     @Test func unfinishedRunsResumeAfterReopen() async throws {
         let directory = temporaryDirectory()
         let url = directory.appending(path: "agent.sqlite")
