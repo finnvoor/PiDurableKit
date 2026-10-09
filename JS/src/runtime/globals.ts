@@ -38,10 +38,15 @@ function timerId(handle: unknown): number | undefined {
 	return undefined;
 }
 
-function schedule(callback: unknown, delay: unknown, args: unknown[], interval: boolean): Timeout {
+/** Node's rule: a delay that isn't a number from 1 to 2³¹−1 ms (NaN, Infinity, 0, negative, too large) is 1 ms. */
+function nodeDelay(delay: unknown): number {
+	const ms = Number(delay);
+	return ms >= 1 && ms <= 2_147_483_647 ? ms : 1;
+}
+
+function schedule(callback: unknown, ms: number, args: unknown[], interval: boolean): Timeout {
 	if (typeof callback !== "function") throw new TypeError("Timer callback must be a function");
 	const id = nextTimerId++;
-	const ms = Math.max(0, Number(delay) || 0);
 	timers.set(id, { callback: callback as TimerCallback, args, interval: interval ? ms : undefined });
 	native.setTimer(id, ms);
 	return new Timeout(id);
@@ -65,8 +70,8 @@ runtimeCallbacks.fireTimer = ((id: number) => {
 	}
 }) as never;
 
-g.setTimeout = (callback: unknown, delay?: unknown, ...args: unknown[]) => schedule(callback, delay, args, false);
-g.setInterval = (callback: unknown, delay?: unknown, ...args: unknown[]) => schedule(callback, delay, args, true);
+g.setTimeout = (callback: unknown, delay?: unknown, ...args: unknown[]) => schedule(callback, nodeDelay(delay), args, false);
+g.setInterval = (callback: unknown, delay?: unknown, ...args: unknown[]) => schedule(callback, nodeDelay(delay), args, true);
 g.setImmediate = (callback: unknown, ...args: unknown[]) => schedule(callback, 0, args, false);
 g.clearTimeout = clear;
 g.clearInterval = clear;
