@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// An advisory lock on a storage, held while a ``Harness`` has it open.
 ///
@@ -6,7 +7,8 @@ import Foundation
 /// the same tool calls twice. The lock lives in a sibling file, `<storage path>.lock`, and `flock` releases it when
 /// the process dies, so a crash never leaves a stale lock.
 final class StorageLock: Sendable {
-    private let descriptor: Int32
+    /// The open lock file, or `nil` once released.
+    private let descriptor: OSAllocatedUnfairLock<Int32?>
 
     /// Locks the storage at `path`, or throws when another harness (in this process or another) holds it.
     init(storagePath path: String) throws {
@@ -21,13 +23,14 @@ final class StorageLock: Sendable {
             }
             throw FileOperationError.posix(lockPath)
         }
-        self.descriptor = descriptor
+        self.descriptor = OSAllocatedUnfairLock(initialState: descriptor)
     }
 
     deinit { release() }
 
-    /// Releases the lock. Closing the descriptor drops it.
+    /// Releases the lock by closing its descriptor. Safe to call more than once, and from any thread.
     func release() {
+        guard let descriptor = descriptor.withLock({ state in defer { state = nil }; return state }) else { return }
         Darwin.close(descriptor)
     }
 }

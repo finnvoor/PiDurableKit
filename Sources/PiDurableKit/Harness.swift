@@ -476,8 +476,9 @@ public final class Harness: Sendable {
 
     /// Settles admitted work and closes the storage. Unfinished runs stay pending until the storage is opened again.
     public func close() async throws {
-        defer { storageLock?.release() }
         try await perform("harness.close")
         engine.host.removeHarness(id)
+        // Only a successful close proves the storage is shut. After a failed one the lock stays until deinit.
+        storageLock?.release()
     }
 }

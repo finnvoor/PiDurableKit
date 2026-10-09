@@ -234,6 +234,18 @@ let todosDocument = Document("app.todos", initial: Todos())
         }
     }
 
+    @Test func releasingAStorageLockTwiceIsHarmless() throws {
+        let path = temporaryDirectory().appending(path: "agent.sqlite").path(percentEncoded: false)
+        let lock = try StorageLock(storagePath: path)
+        lock.release()
+        // The descriptor number is free for reuse now; a second release must not close whoever has it.
+        let reused = Darwin.open("/dev/null", O_RDONLY)
+        lock.release()
+        #expect(fcntl(reused, F_GETFD) != -1)
+        Darwin.close(reused)
+        #expect(throws: Never.self) { try StorageLock(storagePath: path).release() }
+    }
+
     @Test func unfinishedRunsResumeAfterReopen() async throws {
         let directory = temporaryDirectory()
         let url = directory.appending(path: "agent.sqlite")
