@@ -333,6 +333,30 @@ public struct ToolCallContext: Sendable {
         try await handle.call("scope.agent")
     }
 
+    /// The tools the calling conversation is offered, with their schemas (pi-durable `api.agent().tools`): the
+    /// selected extensions' tools, with wraps applied and the agent's tool filter.
+    public func tools() async throws -> [OfferedTool] {
+        try await handle.call("scope.tools")
+    }
+
+    /// Calls a tool the calling conversation is offered, as part of this call.
+    ///
+    /// The tool runs as the harness runs a tool call: its ``Tool/prepareArguments`` repair and its schema check run
+    /// first, then its `execute` with this call's context. Invalid arguments and a throwing tool become error results,
+    /// with an `invalid_arguments` or `tool_error` diagnostic. What the tool reports while it runs (output, details,
+    /// diagnostics) goes into the result it returns, not into this call's.
+    ///
+    /// The called tool is not a tool call of its own: it has no entry in the transcript and no task, and tool hooks
+    /// don't run for it. Throws when the conversation isn't offered the tool.
+    public func callTool(_ name: String, arguments: JSONValue = [:]) async throws -> ToolResult {
+        try await handle.call("scope.callTool", ["name": name, "arguments": arguments])
+    }
+
+    /// Calls a tool the calling conversation is offered, with arguments encoded as JSON.
+    public func callTool(_ name: String, arguments: some Encodable & Sendable) async throws -> ToolResult {
+        try await callTool(name, arguments: JSONValue(encoding: arguments))
+    }
+
     /// A durable value of this call: the stored one, or `candidate` stored now. A replay-safe tool uses memos to find
     /// the work a crashed attempt already did.
     public func memo<Value: Codable & Sendable>(_ name: String, default candidate: @autoclosure () -> Value) async throws -> Value {
@@ -361,6 +385,16 @@ public struct ToolCallContext: Sendable {
 
 /// A remark about a tool call for the model and the UI, such as a truncation or a spill path (pi-durable
 /// `ToolDiagnostic`); never part of the tool's data.
+/// A tool a conversation is offered: its pi-ai `Tool` fields, and the extension that defines it.
+public struct OfferedTool: Decodable, Sendable, Hashable {
+    public var name: String
+    public var description: String
+    /// The JSON schema of the tool's arguments.
+    public var parameters: JSONValue
+    /// The selected extension that defines the tool.
+    public var `extension`: String?
+}
+
 public struct ToolDiagnostic: Codable, Sendable, Hashable {
     public enum Severity: String, Codable, Sendable {
         case info, warn, error

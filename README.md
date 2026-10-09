@@ -166,7 +166,9 @@ let subagent = Tool("subagent", description: "Delegate a task", parameters: .obj
 ```
 
 `ToolCallContext` also offers `memo` (values that survive a rerun), `agent()`, `document(_:)`, `createTask`,
-`waitForTask`, and `details`/`diagnostic`. Results can `addingTools(…)`, and tools can repair arguments
+`waitForTask`, and `details`/`diagnostic`. `tools()` lists the tools the conversation is offered, with their schemas,
+and `callTool(_:arguments:)` runs one of them as part of the call, as the harness would run it (pi-durable's
+`api.agent().tools` and each tool's `execute`). Results can `addingTools(…)`, and tools can repair arguments
 (`preparingArguments`) or bound their output (`limitingOutput`).
 
 `harness.commit { tx in … }` and `conversation.commit { tx in … }` run any set of reads and writes atomically: create
