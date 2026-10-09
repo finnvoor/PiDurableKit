@@ -57,6 +57,33 @@ module.exports = defineExtension({
         #expect(prompt.contains("Use the roll tool for dice."))
     }
 
+    @Test func timersAcceptDelaysNodeAccepts() async throws {
+        let source = #"""
+        const { defineExtension, defineTool } = require("@earendil-works/pi-durable");
+        const { Type } = require("@earendil-works/pi-ai");
+        module.exports = defineExtension({
+            name: "timers",
+            tools: [defineTool({
+                name: "arm",
+                description: "Arm timers with extreme delays",
+                parameters: Type.Object({}),
+                execute: async () => {
+                    for (const delay of [Infinity, NaN, -1, 1e300]) clearTimeout(setTimeout(() => {}, delay));
+                    return { content: [{ type: "text", text: "armed" }] };
+                },
+            })],
+        });
+        """#
+        let setup = try await FauxSetup.make(extensions: [Extension("timers", javaScript: source)])
+        try await setup.faux.append(.toolCall("arm", [:]))
+        try await setup.faux.append(.text("Done"))
+        let root = try await setup.root()
+        _ = try await ask(root, "Arm the timers")
+        let results = try await root.view().entries.compactMap(\.toolResult)
+        #expect(results.first?.text == "armed")
+        try await setup.harness.close()
+    }
+
     @Test func extensionsCannotReachTheHostBridge() async throws {
         let setup = try await FauxSetup.make(extensions: [Extension("dice", javaScript: diceSource)])
         try await setup.faux.append(.toolCall("inspect_globals", [:]))
