@@ -12,14 +12,21 @@ public final class Runtime: Sendable {
     public struct Configuration: Sendable {
         /// The configuration of the `URLSession` that serves JavaScript `fetch()` (model provider requests).
         public var urlSessionConfiguration: URLSessionConfiguration
+        /// How long a model request may go without receiving any bytes before it fails. Default five minutes.
+        ///
+        /// Keepalive pings count as bytes, so this catches a dead connection, not a provider that has stopped
+        /// sending content.
+        public var requestIdleTimeout: TimeInterval
         /// Receives JavaScript console output. Defaults to `os.Logger`.
         public var log: (@Sendable (LogLevel, String) -> Void)?
 
         public init(
             urlSessionConfiguration: URLSessionConfiguration = .default,
+            requestIdleTimeout: TimeInterval = 5 * 60,
             log: (@Sendable (LogLevel, String) -> Void)? = nil
         ) {
             self.urlSessionConfiguration = urlSessionConfiguration
+            self.requestIdleTimeout = requestIdleTimeout
             self.log = log
         }
     }
@@ -63,7 +70,8 @@ actor Engine {
     private var nextStreamID = 1
     private var nextObjectID = 1
     private nonisolated let sqlite = SQLiteConnections()
-    private lazy var network = Network(engine: self, configuration: configuration.urlSessionConfiguration)
+    private lazy var network = Network(
+        engine: self, configuration: configuration.urlSessionConfiguration, idleTimeout: configuration.requestIdleTimeout)
     private lazy var loopback = LoopbackServers(engine: self, requests: loopbackRequests)
     /// How many requests the loopback servers received.
     nonisolated let loopbackRequests = OSAllocatedUnfairLock(initialState: 0)
