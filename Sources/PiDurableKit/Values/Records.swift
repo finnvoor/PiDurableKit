@@ -208,6 +208,9 @@ public struct SubmissionRecord: Codable, Sendable, Hashable, Identifiable {
     public let requestId: String?
     public let type: SubmissionType
     public let status: Status
+    /// The telemetry context of the submission's admission, when the harness records with propagation; its run's
+    /// tasks continue that trace.
+    public let trace: TelemetryCarrier?
 
     public var isSettled: Bool {
         switch status {
@@ -223,7 +226,7 @@ public struct SubmissionRecord: Codable, Sendable, Hashable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, conversationId, requestId, type, status, entry, answer, reason, detail
+        case id, conversationId, requestId, type, status, entry, answer, reason, detail, trace
     }
 
     public init(from decoder: Decoder) throws {
@@ -232,6 +235,7 @@ public struct SubmissionRecord: Codable, Sendable, Hashable, Identifiable {
         conversationId = try container.decode(ConversationID.self, forKey: .conversationId)
         requestId = try container.decodeIfPresent(String.self, forKey: .requestId)
         type = try container.decodeIfPresent(SubmissionType.self, forKey: .type) ?? .input
+        trace = try? container.decodeIfPresent(TelemetryCarrier.self, forKey: .trace)
         let entry = try container.decodeIfPresent(EntryID.self, forKey: .entry)
         switch try container.decode(String.self, forKey: .status) {
         case "queued": status = .queued
@@ -251,6 +255,7 @@ public struct SubmissionRecord: Codable, Sendable, Hashable, Identifiable {
         try container.encode(conversationId, forKey: AnyKey("conversationId"))
         try container.encodeIfPresent(requestId, forKey: AnyKey("requestId"))
         try container.encode(type, forKey: AnyKey("type"))
+        try container.encodeIfPresent(trace, forKey: AnyKey("trace"))
         try status.encode(into: &container)
     }
 }

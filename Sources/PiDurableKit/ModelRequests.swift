@@ -50,11 +50,15 @@ public struct ModelOptions: Encodable, Sendable {
     public var cacheRetention: String?
     public var headers: [String: String]?
     public var metadata: JSONObject?
+    /// How the request identifies the app, over the identity of the ``Models`` it goes through.
+    public var identity: ClientIdentity?
 
     public init(
         reasoning: ThinkingLevel? = nil, maxTokens: Int? = nil, temperature: Double? = nil, sessionId: String? = nil,
-        cacheRetention: String? = nil, headers: [String: String]? = nil, metadata: JSONObject? = nil
+        cacheRetention: String? = nil, headers: [String: String]? = nil, metadata: JSONObject? = nil,
+        identity: ClientIdentity? = nil
     ) {
+        self.identity = identity
         self.reasoning = reasoning
         self.maxTokens = maxTokens
         self.temperature = temperature
@@ -105,24 +109,43 @@ extension Models {
     /// tokens, and headers resolve as for harness requests. Failures come back as a message with stop reason `error`.
     ///
     /// Tools that call a model can report the spend in ``ToolResult/usage``.
-    public func complete(_ model: ModelRef, context: ModelContext, options: ModelOptions = ModelOptions()) async throws
-        -> AssistantMessage
-    {
-        try await call("models.complete", ["model": model, "context": context, "options": options])
+    ///
+    /// With `telemetry`, the request is recorded in a new root span of that recorder, named `span`.
+    public func complete(
+        _ model: ModelRef, context: ModelContext, options: ModelOptions = ModelOptions(), telemetry: Telemetry? = nil,
+        span: String = "request"
+    ) async throws -> AssistantMessage {
+        try await call(
+            "models.complete",
+            ["model": model, "context": context, "options": requestOptions(options), "telemetry": telemetry?.spanSpecification(span)])
+    }
+
+    /// `options` with this view's identity under the request's own.
+    func requestOptions(_ options: ModelOptions) -> ModelOptions {
+        guard let identity else { return options }
+        var options = options
+        options.identity = options.identity.map { identity.merged(with: $0) } ?? identity
+        return options
     }
 
     /// Streams one model response (pi-ai `models.streamSimple`). Stopping the iteration aborts the request.
-    public func stream(_ model: ModelRef, context: ModelContext, options: ModelOptions = ModelOptions())
-        -> AsyncThrowingStream<ModelStreamEvent, Error>
-    {
+    ///
+    /// With `telemetry`, the request is recorded in a new root span of that recorder, named `span`.
+    public func stream(
+        _ model: ModelRef, context: ModelContext, options: ModelOptions = ModelOptions(), telemetry: Telemetry? = nil,
+        span: String = "request"
+    ) -> AsyncThrowingStream<ModelStreamEvent, Error> {
         let engine = runtime.engine
         let id = id
+        let options = requestOptions(options)
+        let telemetry = telemetry?.spanSpecification(span)
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     try await prepare()
                     let events = engine.stream(
-                        "models.stream", ["id": id, "model": model, "context": context, "options": options],
+                        "models.stream",
+                        ["id": id, "model": model, "context": context, "options": options, "telemetry": telemetry],
                         of: ModelStreamEvent.self)
                     for try await event in events { continuation.yield(event) }
                     continuation.finish()

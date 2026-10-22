@@ -281,7 +281,7 @@ public struct Conversation: Sendable, Identifiable, Hashable {
 
     // MARK: Transactions
 
-    /// Runs `body` in one atomic commit; ``Transaction/createTask(_:input:in:ownedBy:background:abandonOnRestart:)`` defaults to this
+    /// Runs `body` in one atomic commit; ``Transaction/createTask(_:input:in:ownedBy:background:abandonOnRestart:trace:links:)`` defaults to this
     /// conversation.
     @discardableResult
     public func commit<T: Sendable>(_ body: @escaping @Sendable (Transaction) async throws -> T) async throws -> T {

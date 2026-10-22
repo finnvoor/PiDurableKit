@@ -13,6 +13,7 @@ import {
 	type EntryId,
 	type Extension,
 	Harness,
+	type HarnessOptions,
 	type HarnessSettings,
 	type SubmissionDraft,
 	type SubmissionId,
@@ -26,7 +27,10 @@ import { environmentOf } from "./env.ts";
 import { withScope } from "./scopes.ts";
 import { openStorage } from "./storage.ts";
 import { buildExtension } from "./extensions.ts";
+import { mergeClientIdentity } from "@earendil-works/pi-ai";
+import { clientIdentity } from "../shims/client.ts";
 import { modelsState } from "./models.ts";
+import { telemetryOf } from "./telemetry.ts";
 import {
 	agentChange,
 	conversation,
@@ -41,6 +45,30 @@ import {
 	resolveSettings,
 } from "./state.ts";
 import { conversationOwnership, runSwiftCommit, type TxHandle } from "./tx.ts";
+
+/** Callbacks of timers the app armed for a harness (`HarnessOptions.setTimer`), by ID. */
+const hostTimers = new Map<number, () => void>();
+let nextHostTimer = 1;
+
+/**
+ * `HarnessOptions.setTimer` in Swift: the app arms each timer synchronously, or declines it, and fires it later through
+ * `harness.fireTimer`. A throw or a declined foreground timer falls back to `setTimeout`, as pi-durable does.
+ */
+export function hostTimer(harness: number): NonNullable<HarnessOptions["setTimer"]> {
+	return (callback, delayMs, { background }) => {
+		const timer = nextHostTimer++;
+		hostTimers.set(timer, callback);
+		const armed = hostSync<boolean>("harness.setTimer", { harness, timer, delay: delayMs, background });
+		if (!armed) {
+			hostTimers.delete(timer);
+			return undefined;
+		}
+		return () => {
+			if (!hostTimers.delete(timer)) return;
+			hostSync("harness.clearTimer", { harness, timer });
+		};
+	};
+}
 
 /** Live settings: every read goes to the newest value Swift sent. */
 function liveSettings(state: HarnessState): HarnessSettings {
@@ -76,6 +104,14 @@ function liveSettings(state: HarnessState): HarnessSettings {
 		get contextRetentionMs() {
 			return value().contextRetentionMs;
 		},
+		get afterFailedRun() {
+			return value().afterFailedRun;
+		},
+		get restartLimit() {
+			// Swift's `Int.max` means never park.
+			const limit = value().restartLimit;
+			return typeof limit === "number" && limit >= 9e15 ? Number.POSITIVE_INFINITY : limit;
+		},
 		get documentRetentionMs() {
 			// Swift has no infinite duration: a retention of a million years or more keeps documents.
 			const ms = value().documentRetentionMs;
@@ -110,7 +146,8 @@ function pipe<T>(stream: number, watch: WatchHandle<T>, map: (value: T, ops: rea
 
 register({
 	"harness.open": async (args, context) => {
-		const { models } = modelsState(args.models);
+		// The current models, replaceable with `harness.setModels` (pi-durable reads them at each use).
+		let models = modelsState(args.models).models;
 		const registry = createRegistry();
 		const state = { id: args.id, registry, settings: { value: args.settings ?? {} } } as HarnessState;
 		for (const spec of args.extensions as Args[]) registry.install(buildExtension(state, spec));
@@ -128,11 +165,25 @@ register({
 		} else if (environment != null) {
 			state.env = ({ cwd }) => environmentOf(environment, cwd);
 		}
+		state.setModels = (id) => {
+			models = modelsState(id).models;
+		};
 		state.harness = await Harness.open(
 			storage,
 			{
-				models,
+				models: () => models,
 				registry,
+				// The app's identity (`Runtime.Client`), over pi-durable's default attribution to pi, then the harness's own.
+				identity: mergeClientIdentity(clientIdentity(), args.identity ?? undefined),
+				...(args.telemetry == null ? {} : { telemetry: telemetryOf(args.telemetry) }),
+				...(args.timer ? { setTimer: hostTimer(args.id) } : {}),
+				...(args.wake
+					? {
+							onWake: (wake) => {
+								void host("harness.wake", { harness: args.id, wake }).catch(() => undefined);
+							},
+						}
+					: {}),
 				settings: state.harnessSettings,
 				...(state.env === undefined ? {} : { env: state.env }),
 				...(args.conversationCreated
@@ -144,10 +195,10 @@ register({
 						}
 					: {}),
 				...(args.clock ? { now: () => hostSync<number>("harness.now", { harness: args.id }) } : {}),
-				onReport: (error) => {
+				onReport: (error, info) => {
 					const message = error instanceof Error ? error.message : String(error);
-					if (args.report) void host("harness.report", { harness: args.id, message }).catch(() => undefined);
-					else console.warn("pi-durable:", message);
+					if (args.report) void host("harness.report", { harness: args.id, message, info: info ?? null }).catch(() => undefined);
+					else console.warn("pi-durable:", info?.type ?? "report", message);
 				},
 			},
 			context,
@@ -163,6 +214,17 @@ register({
 		await state.harness.close(context);
 	},
 	"harness.resume": (args) => harnessState(args.harness).harness.resume(),
+	"harness.wakeState": (args) => harnessState(args.harness).harness.wake(),
+	"harness.retryTask": (args, context) => harnessState(args.harness).harness.retryTask(args.task as TaskId, context),
+	"harness.setModels": (args) => {
+		harnessState(args.harness).setModels?.(args.models);
+	},
+	/** A timer the app armed for the harness (`timer:`) fired. */
+	"harness.fireTimer": (args) => {
+		const callback = hostTimers.get(args.timer as number);
+		hostTimers.delete(args.timer as number);
+		callback?.();
+	},
 	"harness.setSettings": (args) => {
 		harnessState(args.harness).settings.value = args.settings ?? {};
 	},

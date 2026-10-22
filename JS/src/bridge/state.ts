@@ -3,6 +3,7 @@ import type { Context } from "@earendil-works/chord";
 import {
 	DEFAULT_COMPACTION_POLICY,
 	DEFAULT_PROGRESS_POLICY,
+	DEFAULT_RESTART_LIMIT,
 	DEFAULT_RETRY_POLICY,
 	type HarnessSettings,
 	type RegistrySnapshot,
@@ -33,6 +34,8 @@ export type HarnessState = {
 	harnessSettings?: HarnessSettings;
 	/** `HarnessOptions.env`, if the harness has an environment. */
 	env?: NonNullable<HarnessOptions["env"]>;
+	/** Replaces the models the harness uses, by the Swift `Models` ID. */
+	setModels?: (id: number) => void;
 };
 
 export const harnesses = new Map<number, HarnessState>();
@@ -154,6 +157,8 @@ export function resolveSettings(settings: HarnessSettings): Settings {
 		followUpMode: settings.followUpMode ?? "one-at-a-time",
 		contextRetentionMs: settings.contextRetentionMs ?? 600_000,
 		documentRetentionMs: settings.documentRetentionMs ?? 600_000,
+		afterFailedRun: settings.afterFailedRun ?? "keep",
+		restartLimit: settings.restartLimit ?? DEFAULT_RESTART_LIMIT,
 	};
 }
 

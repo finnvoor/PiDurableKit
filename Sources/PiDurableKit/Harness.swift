@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Where a harness keeps its conversations, tasks, and documents.
 public struct Storage: Sendable {
@@ -190,13 +191,25 @@ public struct EnvironmentTarget: Sendable {
 /// }
 /// ```
 public final class Harness: Sendable {
-    public let models: Models
+    private let currentModels: OSAllocatedUnfairLock<Models>
     let id: Int
+    /// The identity of every model request through the harness, under the runtime's; `nil` uses the runtime's.
+    public let identity: ClientIdentity?
     var engine: Engine { models.runtime.engine }
 
-    private init(models: Models, id: Int) {
-        self.models = models
+    /// The models generation, compaction, hooks, and tools use; replace them with ``replaceModels(_:)``.
+    public var models: Models { currentModels.withLock { $0 } }
+
+    /// The models as tools and hooks see them (pi-durable `api.models`): requests identify the app as the harness's.
+    var requestModels: Models {
+        let models = models
+        return identity.map { models.withIdentity($0) } ?? models
+    }
+
+    private init(models: Models, id: Int, identity: ClientIdentity?) {
+        currentModels = OSAllocatedUnfairLock(initialState: models)
         self.id = id
+        self.identity = identity
     }
 
     /// Opens a harness over `storage`.
@@ -211,8 +224,19 @@ public final class Harness: Sendable {
     ///   - onConversationCreated: Runs in every commit that creates or forks a conversation, including a tool's
     ///     ``Transaction/createConversation(ownedBy:)``, for example to give every conversation your documents.
     ///     Reading conversations, entries, or tasks there fails; documents work.
-    ///   - clock: The harness clock, for tests; defaults to the system clock.
-    ///   - onReport: Receives extension failures that do not fail the calling operation.
+    ///   - clock: The harness clock, for tests; defaults to the system clock. Sleeping tasks store deadlines on it, so
+    ///     every process that opens the same storage must use the same clock.
+    ///   - timer: Arms the harness's timers: pacing progress, freeing idle memory, and, without `onWake`, waking
+    ///     sleeping tasks; defaults to dispatch timers. Use it with a fake clock in tests, or to decline background
+    ///     timers in a process that should suspend.
+    ///   - onWake: Tells the app when the harness next needs a running process (pi-durable `onWake`): after open and
+    ///     whenever ``wake()`` changes. With it, the harness arms no timer for sleeping tasks; the app schedules its own
+    ///     wakeup, such as a background task, and calls ``resume()`` then.
+    ///   - onReport: Receives failures that do not fail the calling operation, such as a throwing hook, a task that
+    ///     faulted or was parked, or the error that fails the harness, with what each was about.
+    ///   - identity: How this harness's model requests identify the app, over the runtime's ``Runtime/Client``
+    ///     identity; it also applies to models tools and hooks call through ``ToolCallContext/models``.
+    ///   - telemetry: Records the harness's content-free spans, events, and metrics; it must use the same runtime.
     public static func open(
         _ storage: Storage = .memory,
         models: Models,
@@ -222,16 +246,23 @@ public final class Harness: Sendable {
         resume: Bool = true,
         onConversationCreated: (@Sendable (Transaction, ConversationRecord) async throws -> Void)? = nil,
         clock: (@Sendable () -> Date)? = nil,
-        onReport: (@Sendable (String) -> Void)? = nil
+        timer: HarnessTimer? = nil,
+        onWake: (@Sendable (Wake) -> Void)? = nil,
+        onReport: (@Sendable (HarnessReport) -> Void)? = nil,
+        identity: ClientIdentity? = nil,
+        telemetry: Telemetry? = nil
     ) async throws -> Harness {
         try await models.prepare()
         let engine = models.runtime.engine
+        if let telemetry, telemetry.runtime !== models.runtime {
+            throw PiDurableError.runtime("The telemetry recorder belongs to another runtime than the models")
+        }
         let id = await engine.makeObjectID()
-        let harness = Harness(models: models, id: id)
+        let harness = Harness(models: models, id: id, identity: identity)
         engine.host.registerHarness(
             id, extensions: extensions,
             callbacks: HarnessCallbacks(
-                onConversationCreated: onConversationCreated, clock: clock, onReport: onReport,
+                onConversationCreated: onConversationCreated, clock: clock, onReport: onReport, timer: timer, onWake: onWake,
                 environment: environment.flatMap { if case .perConversation(let choose) = $0.kind { choose } else { nil } }))
         engine.host.attachHarness(harness)
         do {
@@ -248,6 +279,10 @@ public final class Harness: Sendable {
                     "conversationCreated": onConversationCreated != nil,
                     "clock": clock != nil,
                     "report": onReport != nil,
+                    "timer": timer != nil,
+                    "wake": onWake != nil,
+                    "identity": identity.map { try? JSONValue(encoding: $0) } ?? nil,
+                    "telemetry": telemetry?.id,
                 ])
         } catch {
             engine.host.removeHarness(id)
@@ -418,11 +453,29 @@ public final class Harness: Sendable {
         try await perform("harness.setSettings", ["settings": settings])
     }
 
+    /// Replaces the models generation, compaction, hooks, and tools use, from their next use, without reopening the
+    /// harness (pi-durable `models` as a function). They must use the same runtime.
+    public func replaceModels(_ models: Models) async throws {
+        guard models.runtime === self.models.runtime else {
+            throw PiDurableError.runtime("The models belong to another runtime than the harness")
+        }
+        try await models.prepare()
+        currentModels.withLock { $0 = models }
+        try await perform("harness.setModels", ["models": models.id])
+    }
+
     // MARK: Lifecycle
 
-    /// Starts the task scheduler, continuing any run the last process left unfinished. Idempotent.
+    /// Starts the task scheduler, continuing any run the last process left unfinished, and makes sleeping tasks that
+    /// are due runnable: call it when a wakeup the app scheduled from ``wake()`` fires. Idempotent.
     public func resume() async throws {
         try await perform("harness.resume")
+    }
+
+    /// When the harness next needs a running process (pi-durable `Harness.wake()`): ``Wake/active`` while some task can
+    /// run or runs, ``Wake/at`` for the earliest sleep. Neither: nothing does until new work is submitted.
+    public func wake() async throws -> Wake {
+        try await call("harness.wakeState")
     }
 
     /// Waits until no ownerless conversation has running work.
@@ -462,6 +515,12 @@ public final class Harness: Sendable {
         case marked
         /// The task had already ended.
         case terminal
+    }
+
+    /// Runs a task the restart limit parked (``Settings/restartLimit``) again: clears its restart count and starts
+    /// scheduling. Does nothing for a task that isn't parked; throws for an unknown one.
+    public func retryTask(_ id: TaskID) async throws {
+        try await perform("harness.retryTask", ["task": id])
     }
 
     /// Aborts one task and the work it owns. A task no installed definition can take settles as orphaned.
@@ -562,5 +621,34 @@ public final class Harness: Sendable {
     public func close() async throws {
         try await perform("harness.close")
         engine.host.removeHarness(id)
+    }
+}
+
+/// Arms a harness's timers (pi-durable `HarnessOptions.setTimer`), for
+/// ``Harness/open(_:models:extensions:settings:environment:resume:onConversationCreated:clock:timer:onWake:onReport:identity:telemetry:)``.
+///
+/// `arm` gets the delay, whether the timer only frees memory (`background`), and what to run when it fires. It returns
+/// a function that disarms the timer, or `nil` to decline it. The harness frees memory at later commits instead of a
+/// declined background timer, and arms a declined or throwing foreground one itself. A timer shouldn't fire early.
+public struct HarnessTimer: Sendable {
+    let arm: @Sendable (_ delay: Duration, _ background: Bool, _ fire: @escaping @Sendable () -> Void) -> (@Sendable () -> Void)?
+
+    public init(
+        _ arm: @escaping @Sendable (_ delay: Duration, _ background: Bool, _ fire: @escaping @Sendable () -> Void) -> (@Sendable () -> Void)?
+    ) {
+        self.arm = arm
+    }
+
+    /// Dispatch timers on a global queue; with `declineBackground`, timers that only free memory are declined, for a
+    /// process that should be free to suspend.
+    public static func dispatch(declineBackground: Bool = false) -> HarnessTimer {
+        HarnessTimer { delay, background, fire in
+            if background && declineBackground { return nil }
+            let cancelled = OSAllocatedUnfairLock(initialState: false)
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(Int(Engine.timerDelay(delay.milliseconds)))) {
+                if !cancelled.withLock({ $0 }) { fire() }
+            }
+            return { cancelled.withLock { $0 = true } }
+        }
     }
 }

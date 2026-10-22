@@ -1,6 +1,6 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
+import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
 import type { ConversationId, ConversationQuery, ConversationRecord, Cursor, DocumentAddress, DocumentId, DocumentPoint, DocumentQuery, DocumentRecord, EntryId, EntryQuery, EntryRecord, Id, Page, Seq, Storage, StorageWrite, StoredDocument, SubmissionId, SubmissionQuery, SubmissionRecord, TaskId, TaskQuery, TaskRecord } from "../../types.ts";
-import type { SqliteDatabase } from "./database.ts";
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 export type SqliteStorageOptions = {
     /**

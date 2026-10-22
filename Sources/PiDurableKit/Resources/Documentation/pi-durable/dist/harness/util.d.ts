@@ -16,3 +16,7 @@ export declare function closedError(session: {
         readonly error: unknown;
     } | undefined;
 }): Error;
+/** `{ extension }` when the extension is known. */
+export declare function optionalExtension(extension: string | undefined): {
+    readonly extension?: string;
+};

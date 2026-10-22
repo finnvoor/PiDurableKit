@@ -8,7 +8,9 @@ typealias LanguageModelResponder = @Sendable (_ request: JSONValue, _ emit: @esc
 struct HarnessCallbacks: Sendable {
     var onConversationCreated: (@Sendable (Transaction, ConversationRecord) async throws -> Void)?
     var clock: (@Sendable () -> Date)?
-    var onReport: (@Sendable (String) -> Void)?
+    var onReport: (@Sendable (HarnessReport) -> Void)?
+    var timer: HarnessTimer?
+    var onWake: (@Sendable (Wake) -> Void)?
     var environment: (@Sendable (EnvironmentTarget) async throws -> ExecutionEnvironment?)?
 }
 
@@ -39,6 +41,9 @@ final class HostRouter: Sendable {
         var storages: [Int: any CustomStorage] = [:]
         var conformanceFactories: [Int: @Sendable () async throws -> JSONValue] = [:]
         var languageModels: [String: LanguageModelResponder] = [:]
+        var timers: [Int: @Sendable () -> Void] = [:]
+        /// Disarms the timers apps armed for their harnesses, by `harness/timer`.
+        var harnessTimers: [String: @Sendable () -> Void] = [:]
 
         mutating func makeID() -> Int {
             defer { nextID += 1 }
@@ -95,7 +100,12 @@ final class HostRouter: Sendable {
     }
 
     func removeHarness(_ harness: Int) {
-        state.withLock { _ = $0.harnesses.removeValue(forKey: harness) }
+        let disarms = state.withLock { state -> [@Sendable () -> Void] in
+            state.harnesses.removeValue(forKey: harness)
+            let keys = state.harnessTimers.keys.filter { $0.hasPrefix("\(harness)/") }
+            return keys.compactMap { state.harnessTimers.removeValue(forKey: $0) }
+        }
+        for disarm in disarms { disarm() }
     }
 
     func setResponder(
@@ -131,6 +141,26 @@ final class HostRouter: Sendable {
     /// Answers requests to one model of a Swift-implemented provider, such as Foundation Models.
     func setLanguageModel(models: Int, provider: ProviderID, model: String, _ responder: @escaping LanguageModelResponder) {
         state.withLock { $0.languageModels["\(models)/\(provider)/\(model)"] = responder }
+    }
+
+    /// Remembers what a task phase's timer runs when it fires.
+    func registerTimer(_ body: @escaping @Sendable () -> Void) -> Int {
+        state.withLock { state in
+            let id = state.makeID()
+            state.timers[id] = body
+            return id
+        }
+    }
+
+    func removeTimer(_ id: Int) {
+        state.withLock { _ = $0.timers.removeValue(forKey: id) }
+    }
+
+    private func fireTimer(_ arguments: JSONValue) -> JSONValue? {
+        let id = arguments["timer"]?.intValue ?? 0
+        let body = state.withLock { $0.timers.removeValue(forKey: id) }
+        body?()
+        return nil
     }
 
     func registerLogin(_ session: LoginSession) -> Int {
@@ -253,6 +283,7 @@ final class HostRouter: Sendable {
             case "commit.run": try await runCommit(arguments)
             case "harness.conversationCreated": try await conversationCreated(arguments)
             case "harness.report": report(arguments)
+            case "harness.wake": wake(arguments)
             case "harness.environment": try await chooseEnvironment(arguments)
             case "faux.respond": try await respond(arguments)
             case "sqlite.exec": try await sqliteExec(arguments)
@@ -273,6 +304,7 @@ final class HostRouter: Sendable {
             case "env.custom": try await customEnvironment(arguments)
             case "foundationModels.respond": try await respondWithLanguageModel(arguments)
             case "codemode.execute": try await executeCodemode(arguments)
+            case "timer.fire": fireTimer(arguments)
             case "env.shell": try await shell(arguments)
             case "storage.custom": try await customStorage(arguments)
             case "conformance.storage", "conformance.environment": try await conformanceSubject(arguments)
@@ -296,6 +328,8 @@ final class HostRouter: Sendable {
                 case "doc.initial": try seededInitial(arguments)
                 case "doc.checkpoint": try checkpoint(arguments)
                 case "harness.now": try now(arguments)
+                case "harness.setTimer": try armTimer(arguments)
+                case "harness.clearTimer": disarmTimer(arguments)
                 case "wrap.define": try defineWrappedTool(arguments)
                 case "wrap.prepare": try prepareWrappedArguments(arguments)
                 default: throw PiDurableError.runtime("Unknown synchronous host method \(method)")
@@ -619,8 +653,44 @@ final class HostRouter: Sendable {
     }
 
     private func report(_ arguments: JSONValue) -> JSONValue? {
-        (try? registration(arguments))?.callbacks.onReport?(arguments["message"]?.stringValue ?? "")
+        let report = HarnessReport(message: arguments["message"]?.stringValue ?? "", info: arguments["info"])
+        (try? registration(arguments))?.callbacks.onReport?(report)
         return nil
+    }
+
+    private func wake(_ arguments: JSONValue) -> JSONValue? {
+        guard let wake = try? (arguments["wake"] ?? [:]).decode(as: Wake.self) else { return nil }
+        (try? registration(arguments))?.callbacks.onWake?(wake)
+        return nil
+    }
+
+    /// Arms a harness timer with the app's `timer`: `true` once armed, `false` when the app declined it.
+    private func armTimer(_ arguments: JSONValue) throws -> JSONValue {
+        let harness = arguments["harness"]?.intValue ?? 0
+        let timer = arguments["timer"]?.intValue ?? 0
+        guard let arm = try registration(arguments).callbacks.timer?.arm else { return false }
+        let engine = try engine
+        let delay = Duration.milliseconds(max(0, arguments["delay"]?.doubleValue ?? 0))
+        let fire: @Sendable () -> Void = { [weak engine, self] in
+            guard state.withLock({ $0.harnessTimers.removeValue(forKey: "\(harness)/\(timer)") }) != nil else { return }
+            engine?.send("harness.fireTimer", ["harness": harness, "timer": timer])
+        }
+        // Registered before arming, so a timer that fires at once still finds itself.
+        state.withLock { $0.harnessTimers["\(harness)/\(timer)"] = {} }
+        guard let disarm = arm(delay, arguments["background"]?.boolValue ?? false, fire) else {
+            state.withLock { _ = $0.harnessTimers.removeValue(forKey: "\(harness)/\(timer)") }
+            return false
+        }
+        state.withLock { state in
+            if state.harnessTimers["\(harness)/\(timer)"] != nil { state.harnessTimers["\(harness)/\(timer)"] = disarm }
+        }
+        return true
+    }
+
+    private func disarmTimer(_ arguments: JSONValue) -> JSONValue {
+        let key = "\(arguments["harness"]?.intValue ?? 0)/\(arguments["timer"]?.intValue ?? 0)"
+        state.withLock { $0.harnessTimers.removeValue(forKey: key) }?()
+        return .null
     }
 
     private func now(_ arguments: JSONValue) throws -> JSONValue {

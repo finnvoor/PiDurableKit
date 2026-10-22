@@ -1,13 +1,18 @@
 import { type Context } from "@earendil-works/chord";
+import { type TelemetryContext, type TelemetrySpan } from "@earendil-works/pi-telemetry";
 import type { SessionImpl } from "../session/session.ts";
 import type { ConversationId, Storage, SubmissionId, SubmissionRecord, Tx } from "../types.ts";
 import { type QueueModes } from "./inbox.ts";
 import type { SettledSubmissionRecord, Submission, SubmissionDraft } from "./types.ts";
 type AbortResult = "aborted" | "already_placed" | "settled";
+type Admission = {
+    readonly id: SubmissionId;
+    readonly status: "queued" | "placed" | "done";
+};
 /** Admission, waits, and withdrawal of the durable submissions of one Harness. */
 export declare class Submissions {
     #private;
-    constructor(session: SessionImpl, storage: Storage, now: () => number, queueModes: () => QueueModes, resume: () => void);
+    constructor(session: SessionImpl, storage: Storage, now: () => number, queueModes: () => QueueModes, resume: () => void, telemetry?: TelemetryContext);
     /** Admit a submission in one commit; see `admitSubmission()`. */
     submit(conversationId: ConversationId, draft: SubmissionDraft, context: Context): Promise<Submission>;
     /** Handle for an existing submission, or `undefined`. */
@@ -27,5 +32,5 @@ export declare class Submissions {
  * own) and starts a run, and an idle write appends its entry and settles `done`, or `stale` when its head reaches
  * before the active range.
  */
-export declare function admitSubmission(tx: Tx, conversationId: ConversationId, draft: SubmissionDraft, now: number, queueModes: QueueModes): Promise<SubmissionId>;
+export declare function admitSubmission(tx: Tx, conversationId: ConversationId, draft: SubmissionDraft, now: number, queueModes: QueueModes, span?: TelemetrySpan): Promise<Admission>;
 export {};

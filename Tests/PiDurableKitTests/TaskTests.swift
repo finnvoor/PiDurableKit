@@ -221,7 +221,7 @@ func parked(_ gate: Gate, name: String = "test.parked") -> TaskType<Empty, At, S
     @Test func memosDocumentsAndClockInsideTasks() async throws {
         let progress = Document("test.progress", scope: .task, initial: Counter())
         let fixedDate = Date(timeIntervalSince1970: 1_800_000_000)
-        let reports = Mutex<[String]>([])
+        let reports = Mutex<[HarnessReport]>([])
         let task = TaskType<Empty, At, String>("test.memo", version: 1, initial: { _ in At(phase: "run") }, abort: abortTask) {
             Phase("run") { run in
                 let key = try await run.memo("key", default: "first")
@@ -239,12 +239,19 @@ func parked(_ gate: Gate, name: String = "test.parked") -> TaskType<Empty, At, S
         let models = Models(builtinProviders: false)
         let harness = try await Harness.open(
             models: models, extensions: [Extension("tasks") { task }], clock: { fixedDate },
-            onReport: { message in reports.update { $0.append(message) } })
+            onReport: { report in reports.update { $0.append(report) } })
         let root = try await harness.root()
         let id = try await root.commit { tx in try await tx.createTask(task, input: Empty()) }
         let outcome = try await withTimeout { try await harness.waitForTask(id, as: String.self) }
         #expect(outcome.result == "first first 7 1800000000")
-        #expect(reports.get().contains { $0.contains("progress 7") })
+        // The task's own report says which task it is about.
+        let report = try #require(reports.get().first { $0.message.contains("progress 7") })
+        guard case .taskError(let about, _) = report.kind else {
+            Issue.record("Expected a task error, got \(report.kind)")
+            return
+        }
+        #expect(about.id == id)
+        #expect(about.kind == "test.memo")
     }
 
     @Test func taskHooksLetOtherExtensionsWeighIn() async throws {

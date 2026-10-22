@@ -39,7 +39,8 @@ struct FoundationModelsTests {
         try await models.register(FoundationModelsProvider())
         let catalog = try await models.models(for: .apple)
         #expect(catalog.map(\.modelId) == ["on-device", "private-cloud-compute"])
-        #expect(catalog.first?.contextWindow == SystemLanguageModel.default.contextSize)
+        // The model's own size, or 4096 while a model that isn't ready yet reports none.
+        #expect([SystemLanguageModel.default.contextSize, 4096].contains(catalog.first?.contextWindow ?? 0))
         // Private Cloud Compute's reasoning levels, and none for the on-device model.
         #expect(catalog.map(\.thinkingLevels) == [[.off], [.low, .medium, .high]])
         #expect(FoundationModelsResponder.reasoningLevel("off") == .light)

@@ -211,16 +211,19 @@ public struct Transaction: Sendable {
     ///   - background: Survives the conversation's abort and does not keep it busy.
     ///   - abandonOnRestart: Its creator awaits it only in memory: when a later harness starts scheduling, the task, if
     ///     still live, is aborted with the work it owns before any of it runs again.
+    ///   - trace: Where the task's telemetry continues; by default its creator's trace.
+    ///   - links: Telemetry links attached to the spans of the task's first invocation.
     @discardableResult
     public func createTask<Input, State, Result>(
         _ type: TaskType<Input, State, Result>, input: Input, in conversation: ConversationID? = nil,
-        ownedBy task: TaskID? = nil, background: Bool = false, abandonOnRestart: Bool = false
+        ownedBy task: TaskID? = nil, background: Bool = false, abandonOnRestart: Bool = false, trace: TaskTrace = .inherited,
+        links: [TelemetryCarrier] = []
     ) async throws -> TaskID {
         try await handle.call(
             "tx.createTask",
             [
                 "task": type.name, "input": try JSONValue(encoding: input), "conversation": conversation, "ownerTask": task,
-                "background": background, "abandonOnRestart": abandonOnRestart,
+                "background": background, "abandonOnRestart": abandonOnRestart, "trace": trace.json, "links": links,
             ])
     }
 

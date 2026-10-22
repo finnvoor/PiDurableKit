@@ -25,6 +25,8 @@ import {
 } from "@earendil-works/pi-ai";
 // pi-ai's own sign-in pieces, which its package doesn't export: the loopback redirect server (Network.framework, through
 // the node:http shim), PKCE, and the device-code poller.
+import { clientIdentity } from "../shims/client.ts";
+import { inSpan } from "./telemetry.ts";
 import { startOAuthCallbackServer } from "../../node_modules/@earendil-works/pi-ai/dist/auth/oauth/callback-server.js";
 import { pollOAuthDeviceCodeFlow } from "../../node_modules/@earendil-works/pi-ai/dist/auth/oauth/device-code.js";
 import { generatePKCE } from "../../node_modules/@earendil-works/pi-ai/dist/auth/oauth/pkce.js";
@@ -398,9 +400,12 @@ function requestOf(args: Args, signal: AbortSignal | undefined) {
 
 register({
 	// pi-ai `models.completeSimple` / `models.streamSimple`, for tools and tasks that call a model themselves.
+	// With `telemetry`, the request records in a new root span of that recorder (pi-ai `options.telemetry`).
 	"models.complete": (args, context: ChordContext) => {
 		const request = requestOf(args, context.abortSignal);
-		return request.models.completeSimple(request.model, request.context as never, request.options as never);
+		return inSpan(args.telemetry, (span) =>
+			request.models.completeSimple(request.model, request.context as never, { ...request.options, ...(span ? { telemetry: span } : {}) } as never),
+		);
 	},
 	"models.stream": (args) => {
 		const controller = new AbortController();
@@ -409,11 +414,14 @@ register({
 		openStream(stream, () => controller.abort());
 		void (async () => {
 			try {
-				for await (const event of request.models.streamSimple(request.model, request.context as never, request.options as never)) {
-					// `partial` repeats the whole message on every event; Swift rebuilds it from the deltas.
-					const { partial: _partial, ...rest } = event as Args;
-					emit(stream, rest);
-				}
+				await inSpan(args.telemetry, async (span) => {
+					const options = { ...request.options, ...(span ? { telemetry: span } : {}) };
+					for await (const event of request.models.streamSimple(request.model, request.context as never, options as never)) {
+						// `partial` repeats the whole message on every event; Swift rebuilds it from the deltas.
+						const { partial: _partial, ...rest } = event as Args;
+						emit(stream, rest);
+					}
+				});
 				finish(stream);
 			} catch (error) {
 				finish(stream, error);
@@ -426,7 +434,12 @@ register({
 	"models.create": async (args) => {
 		const credentials = new HostCredentialStore(args.id);
 		const catalog = (args.catalog as string | null | undefined) ?? undefined;
-		const models = createModels({ credentials, ...(catalog ? { modelsStore: new HostModelsStore(args.id) } : {}) });
+		// Every request identifies the app (`Runtime.Client`), unless a harness or the request itself says otherwise.
+		const models = createModels({
+			credentials,
+			identity: clientIdentity(),
+			...(catalog ? { modelsStore: new HostModelsStore(args.id) } : {}),
+		});
 		if (args.builtin !== false) {
 			const providers = builtinProviders();
 			for (const provider of catalog ? withRemoteCatalogs(providers, catalog) : providers) models.setProvider(provider);

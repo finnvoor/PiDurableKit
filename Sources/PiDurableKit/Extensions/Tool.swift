@@ -361,7 +361,7 @@ public struct ToolCallContext: Sendable {
 
     /// The harness's models (pi-durable `api.models`), for calling a model with the same catalog and credentials as
     /// generation. Report the spend in ``ToolResult/usage``.
-    public var models: Models { harness.models }
+    public var models: Models { harness.requestModels }
 
     /// Appends running output. It is committed periodically, shown in ``LiveState/ToolSlot/output``, and becomes
     /// the result when the tool returns ``ToolResult/streamedOutput``.
@@ -420,16 +420,18 @@ public struct ToolCallContext: Sendable {
     ///   - background: Survives the conversation's abort and does not keep it busy.
     ///   - abandonOnRestart: Whether a later harness aborts the task after a restart; by default `true` for a task this
     ///     call owns when the tool is not ``Tool/Replay/safe``, since the call never resumes to await it.
+    ///   - trace: Where the task's telemetry continues; by default the call's trace.
+    ///   - links: Telemetry links attached to the spans of the task's first invocation.
     @discardableResult
     public func createTask<Input, State, Result>(
         _ type: TaskType<Input, State, Result>, input: Input, ownedByConversation: Bool = false, background: Bool = false,
-        abandonOnRestart: Bool? = nil
+        abandonOnRestart: Bool? = nil, trace: TaskTrace = .inherited, links: [TelemetryCarrier] = []
     ) async throws -> TaskID {
         try await handle.call(
             "scope.createTask",
             [
                 "task": type.name, "input": try JSONValue(encoding: input), "ownedByConversation": ownedByConversation,
-                "background": background, "abandonOnRestart": abandonOnRestart,
+                "background": background, "abandonOnRestart": abandonOnRestart, "trace": trace.json, "links": links,
             ])
     }
 
@@ -506,6 +508,12 @@ public struct ToolCallContext: Sendable {
     @available(*, deprecated, renamed: "executeTool(_:arguments:key:progress:)")
     public func callTool(_ name: String, arguments: some Encodable & Sendable) async throws -> ToolResult {
         try await executeTool(name, arguments: arguments).toolResult
+    }
+
+    /// The harness clock (pi-durable `api.now()`): the times a rerun after a restart compares against.
+    public func now() async throws -> Date {
+        let milliseconds: Double = try await handle.call("scope.now")
+        return Date(timeIntervalSince1970: milliseconds / 1000)
     }
 
     /// The output retained so far, as the model will see it when the result omits ``ToolResult/output``, and whether

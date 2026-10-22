@@ -1,3 +1,4 @@
+export { validateSqliteSchemaPrefix } from "@earendil-works/chord/sqlite";
 /**
  * Immutable identifier history for migrations and runtime queries. Never change or remove an existing value; a
  * rename adds a new entry so historical migrations keep rendering their original object names.
@@ -38,9 +39,6 @@ export type SqliteSchema = {
     readonly tables: SqliteIdentifiers<typeof TABLE_NAMES>;
     readonly indexes: SqliteIdentifiers<typeof INDEX_NAMES>;
 };
-/** Validate a prefix before using it as part of a SQLite identifier. */
-export declare function validateSqliteSchemaPrefix(prefix: string): void;
 /** Build the identifiers used by every migration and storage query. */
 export declare function createSqliteSchema(prefix?: string): SqliteSchema;
 export declare const DEFAULT_SQLITE_SCHEMA: SqliteSchema;
-export {};

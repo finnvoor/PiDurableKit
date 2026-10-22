@@ -1,3 +1,4 @@
+import type { TelemetryCarrier } from "@earendil-works/pi-telemetry";
 // Transactions: Swift runs a closure inside a pi-durable commit and reaches the `Tx` through a handle.
 import type { Context } from "@earendil-works/chord";
 import {
@@ -87,6 +88,7 @@ register({
 			...(args.conversation == null ? {} : { conversationId: args.conversation }),
 			...(args.background ? { background: true } : {}),
 			...(args.abandonOnRestart ? { abandonOnRestart: true } : {}),
+			...traceOptions(args),
 		});
 	},
 	"tx.readDoc": async (args) => JSON.parse(JSON.stringify(await draftOf(txOf(args).tx, args))),
@@ -99,3 +101,11 @@ register({
 		await configure(tx, args.conversation, agentChange(harness, args.change)!);
 	},
 });
+
+/** A new task's telemetry options: `trace` (a carrier, or `"root"`; absent inherits the creator's) and `links`. */
+export function traceOptions(args: Args): { trace?: TelemetryCarrier | "root"; links?: TelemetryCarrier[] } {
+	return {
+		...(args.trace == null ? {} : { trace: args.trace }),
+		...(args.links == null || args.links.length === 0 ? {} : { links: args.links }),
+	};
+}

@@ -3,6 +3,9 @@
 // trust.
 import * as chordContext from "@earendil-works/chord/context";
 import * as chordOutput from "@earendil-works/chord/output";
+import * as chordSqlite from "@earendil-works/chord/sqlite";
+import * as chordTelemetrySqlite from "@earendil-works/chord/telemetry-sqlite";
+import * as piTelemetry from "@earendil-works/pi-telemetry";
 import * as piAI from "@earendil-works/pi-ai";
 import * as piDurable from "@earendil-works/pi-durable";
 import * as piDurableEnv from "@earendil-works/pi-durable/env";
@@ -23,6 +26,9 @@ const modules: Record<string, unknown> = {
 	"@earendil-works/pi-ai": piAI,
 	"@earendil-works/chord/context": chordContext,
 	"@earendil-works/chord/output": chordOutput,
+	"@earendil-works/chord/sqlite": chordSqlite,
+	"@earendil-works/chord/telemetry-sqlite": chordTelemetrySqlite,
+	"@earendil-works/pi-telemetry": piTelemetry,
 };
 
 /**

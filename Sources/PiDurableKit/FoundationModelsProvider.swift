@@ -60,11 +60,12 @@ public struct FoundationModelsProvider: Sendable {
             return true
         }
 
-        /// The model's context window, as reported.
+        /// The model's context window, as reported. A model not ready yet can report 0 (the iOS Simulator's on-device
+        /// model, just after launch); that would break compaction, so it counts as unknown.
         func resolvedContextWindow() async -> Int {
             if let contextWindow { return contextWindow }
-            if let system = model as? SystemLanguageModel { return system.contextSize }
-            if let cloud = model as? PrivateCloudComputeLanguageModel, let size = try? await cloud.contextSize { return size }
+            if let system = model as? SystemLanguageModel, system.contextSize > 0 { return system.contextSize }
+            if let cloud = model as? PrivateCloudComputeLanguageModel, let size = try? await cloud.contextSize, size > 0 { return size }
             return 4096
         }
     }

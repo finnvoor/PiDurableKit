@@ -36,6 +36,8 @@ export declare class JsonlStorage implements Storage {
     }) | undefined>;
     scanEntries(query: EntryQuery, limit: number, cursor: Cursor | undefined, context: Context): Promise<import("../../types.ts").Page<import("../../types.ts").EntryRecord, Readonly<Record<string, JsonValue>>>>;
     task(id: TaskId, context: Context): Promise<({
+        readonly trace?: import("@earendil-works/pi-telemetry").TelemetryCarrier;
+        readonly links?: readonly import("@earendil-works/pi-telemetry").TelemetryCarrier[];
         readonly id: TaskId<JsonValue>;
         readonly conversationId: ConversationId;
         readonly kind: string;
@@ -48,6 +50,7 @@ export declare class JsonlStorage implements Storage {
         readonly abandonOnRestart?: true;
         readonly startedAt?: number;
         readonly endedAt?: number;
+        readonly restarts?: number;
     } & ({
         readonly state: {
             readonly status: "pending";
@@ -62,6 +65,11 @@ export declare class JsonlStorage implements Storage {
             readonly checkpoint: JsonValue;
             readonly on: readonly TaskId[];
             readonly policy: import("../../types.ts").JoinPolicy;
+            readonly outcome?: never;
+        } | {
+            readonly status: "sleeping";
+            readonly checkpoint: JsonValue;
+            readonly until: number;
             readonly outcome?: never;
         };
         readonly memos?: Readonly<Record<string, JsonValue>>;
@@ -78,6 +86,8 @@ export declare class JsonlStorage implements Storage {
         readonly memos?: never;
     })) | undefined>;
     scanTasks(query: TaskQuery, limit: number, cursor: Cursor | undefined, context: Context): Promise<import("../../types.ts").Page<{
+        readonly trace?: import("@earendil-works/pi-telemetry").TelemetryCarrier;
+        readonly links?: readonly import("@earendil-works/pi-telemetry").TelemetryCarrier[];
         readonly id: TaskId<JsonValue>;
         readonly conversationId: ConversationId;
         readonly kind: string;
@@ -90,6 +100,7 @@ export declare class JsonlStorage implements Storage {
         readonly abandonOnRestart?: true;
         readonly startedAt?: number;
         readonly endedAt?: number;
+        readonly restarts?: number;
     } & ({
         readonly state: {
             readonly status: "pending";
@@ -104,6 +115,11 @@ export declare class JsonlStorage implements Storage {
             readonly checkpoint: JsonValue;
             readonly on: readonly TaskId[];
             readonly policy: import("../../types.ts").JoinPolicy;
+            readonly outcome?: never;
+        } | {
+            readonly status: "sleeping";
+            readonly checkpoint: JsonValue;
+            readonly until: number;
             readonly outcome?: never;
         };
         readonly memos?: Readonly<Record<string, JsonValue>>;

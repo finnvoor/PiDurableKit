@@ -2,11 +2,11 @@
 
 extension PiDurable {
     /// The version of `@earendil-works/pi-durable` bundled into this package.
-    public static let version = "1.3.0"
+    public static let version = "1.4.0"
     /// The version of `@earendil-works/pi-ai` bundled into this package.
-    public static let piAIVersion = "1.3.0"
+    public static let piAIVersion = "1.4.0"
     /// The version of `@earendil-works/chord` bundled into this package.
-    public static let chordVersion = "1.3.0"
+    public static let chordVersion = "1.4.0"
     /// The version of `@earendil-works/pi-codemode` bundled into this package.
-    public static let piCodemodeVersion = "1.3.0"
+    public static let piCodemodeVersion = "1.4.0"
 }

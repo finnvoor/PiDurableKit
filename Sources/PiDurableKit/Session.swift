@@ -64,19 +64,20 @@ public final class Session: Sendable {
     ///   - clock: The session clock for task times, for tests; defaults to the system clock.
     ///   - documentRetention: How long a loaded document that nothing observes stays in memory; see
     ///     ``Settings/documentRetention``.
+    ///   - timer: Arms the session's timers, such as the ones that free idle documents; see ``HarnessTimer``.
     public static func open(
         _ storage: Storage = .memory, runtime: Runtime = .shared, clock: (@Sendable () -> Date)? = nil,
-        documentRetention: Duration? = nil
+        documentRetention: Duration? = nil, timer: HarnessTimer? = nil
     ) async throws -> Session {
         let engine = runtime.engine
         let id = await engine.makeObjectID()
-        engine.host.registerHarness(id, extensions: [], callbacks: HarnessCallbacks(clock: clock))
+        engine.host.registerHarness(id, extensions: [], callbacks: HarnessCallbacks(clock: clock, timer: timer))
         do {
             try await engine.perform(
                 "session.open",
                 [
                     "id": id, "storage": try storage.specification(engine.host), "clock": clock != nil,
-                    "documentRetentionMs": documentRetention?.milliseconds,
+                    "documentRetentionMs": documentRetention?.milliseconds, "timer": timer != nil,
                 ])
         } catch {
             engine.host.removeHarness(id)

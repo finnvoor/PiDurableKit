@@ -8,7 +8,7 @@ export declare function replaySections(messages: readonly Message[]): Map<string
  * Render the agent's sections in order. `undefined` omits a section; tagged text is wrapped as `<key>\n...\n</key>`. A
  * section that throws keeps its shown text, if any, and is reported; errors after `context` is aborted propagate.
  */
-export declare function renderSections<Tool extends ToolRegistration>(sections: readonly PromptSection<Tool>[], input: PromptInput<Tool>, shown: ReadonlyMap<string, string>, report: (error: unknown) => void, context: Context): Promise<Map<string, string>>;
+export declare function renderSections<Tool extends ToolRegistration>(sections: readonly PromptSection<Tool>[], input: PromptInput<Tool>, shown: ReadonlyMap<string, string>, report: (error: unknown, section: PromptSection<Tool>) => void, context: Context): Promise<Map<string, string>>;
 type SystemDraft = TypedEntryDraft<never>;
 /**
  * Plan the `pi.system` entries that make the replayed sections and tools of `view` equal `desired` and `tools` in values

@@ -7,6 +7,8 @@ export declare const DEFAULT_PROGRESS_POLICY: ProgressPolicy;
 export declare const INSTRUCTIONS_KEY = "instructions";
 /** Built-in agent document; rewindable so forks start from the agent at their fork entry. */
 export declare const AgentDoc: import("../types.ts").RewindableConversationDocToken<AgentState>;
+/** Default `settings.restartLimit`. */
+export declare const DEFAULT_RESTART_LIMIT = 5;
 /** Resolve the host settings: every field over its built-in default, object fields merged. */
 export declare function resolveSettings(settings: HarnessSettings | undefined): Settings;
 /** Apply one change to `pi.agent`: a given field replaces the stored one, `null` clears it, `undefined` changes nothing. */
@@ -26,9 +28,18 @@ export declare function addTools(tx: Tx, conversationId: ConversationId, added: 
  */
 export declare function createAgent(tx: Tx, conversation: ConversationRecord): Promise<void>;
 /** Handlers of the selected extensions' hooks for a task name, in extension order. */
-export declare function agentHooks(agent: Agent, taskName: string): object[];
+export declare function agentHooks(agent: Agent, taskName: string): {
+    readonly extension: string;
+    readonly handlers: object;
+}[];
+/** The extension whose code a section of `agent` runs: the last selected one that provides or wraps it. */
+export declare function sectionExtension(agent: Agent, key: string): string | undefined;
+/** The extension whose code a tool of `agent` runs: the last selected one that provides or wraps it. */
+export declare function toolExtension(agent: Agent, name: string): string | undefined;
 /**
  * Resolve an agent from its stored state (absent: every field unset), a registry snapshot, and resolved settings. A
  * wrapper that throws or renames drops its target and is reported; a wrapper without a target does nothing.
  */
-export declare function resolveAgent<Tool extends ToolRegistration>(state: Readonly<AgentState> | undefined, snapshot: RegistrySnapshot<Tool>, settings: Settings, report: (error: unknown) => void): Agent<Tool>;
+export declare function resolveAgent<Tool extends ToolRegistration>(state: Readonly<AgentState> | undefined, snapshot: RegistrySnapshot<Tool>, settings: Settings, 
+/** Gets a wrapper's failure with the name of the wrapper's extension. */
+report: (error: unknown, extension: string) => void): Agent<Tool>;

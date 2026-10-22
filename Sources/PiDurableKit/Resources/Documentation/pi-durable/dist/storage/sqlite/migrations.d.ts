@@ -1,9 +1,6 @@
-import type { SqliteDatabase } from "./database.ts";
+import { type SqliteDatabase, type SqliteMigration } from "@earendil-works/chord/sqlite";
 import { type SqliteSchema } from "./schema.ts";
-export type SqliteMigration = {
-    readonly version: number;
-    readonly statements: readonly string[];
-};
+export type { SqliteMigration } from "@earendil-works/chord/sqlite";
 /** Build immutable, ordered schema history for a set of SQLite identifiers. */
 export declare function createSqliteMigrations(schema: SqliteSchema): readonly SqliteMigration[];
 export declare const SQLITE_MIGRATIONS: readonly SqliteMigration[];

@@ -55,13 +55,14 @@ export function docToken(spec: DocSpec): AnyToken {
 	const checkpointWhen = spec.checkpoints
 		? (value: JsonObject, ops: readonly unknown[], info: { deltasSinceBase: number }) =>
 				hostSync<boolean>("doc.checkpoint", { kind: spec.kind, value, ops, deltasSinceBase: info.deltasSinceBase })
-		: undefined;
+		: // pi-durable requires a policy; without one, every ordinary change is stored as a delta.
+			() => false;
 	const definition = {
 		kind: spec.kind,
 		version: spec.version,
 		...semantics,
 		...(migrate === undefined ? {} : { migrate }),
-		...(checkpointWhen === undefined ? {} : { checkpointWhen }),
+		checkpointWhen,
 	};
 	const familyInitial = spec.seeded
 		? (seed: JsonValue) => hostSync<JsonObject>("doc.initial", { kind: spec.kind, seed: seed ?? null })

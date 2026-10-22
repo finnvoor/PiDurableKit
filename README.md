@@ -99,7 +99,16 @@ The Swift API mirrors pi-durable's, with Swift concurrency in place of Chord con
 | a pi-ai provider over Apple's FoundationModels (Swift-only) | `models.register(FoundationModelsProvider())`, `ModelRef.appleOnDevice`, `.applePrivateCloudCompute` |
 | `ROOT_CONVERSATION_ID`, `INSTRUCTIONS_KEY` | `ConversationID.root`, `PromptSection.instructionsKey` |
 | `ReadAfterWrite`, `SessionFailed`, `StorageRequestError`, `ConversationBusy`, `FileError`, `ExecutionError`, `Jsonl*Error` | `PiDurableError.readAfterWrite`, `.sessionFailed(message:cause:)`, `.storageRequestError`, `.conversationBusy(id)`, `.file(code:message:path:)`, `.execution(code:message:spillPath:)`, `.jsonlCorrupted`, `.jsonlPoisoned` |
-| `conversationCreated`, `init`, `now`, `onReport` | `onConversationCreated:`, `initialize:`, `clock:`, `onReport:` |
+| `conversationCreated`, `init`, `now`, `onReport(error, info)` | `onConversationCreated:`, `initialize:`, `clock:`, `onReport:` → `HarnessReport` |
+| `HarnessOptions.setTimer`, `onWake`, `harness.wake()` | `Harness.open(timer:onWake:)`, `HarnessTimer`, `harness.wake()` → `Wake`, `Session.open(timer:)` |
+| `HarnessOptions.identity`, pi-ai `ClientIdentity`, `withClientIdentity()`, request `identity` | `Harness.open(identity:)`, `ClientIdentity`, `Runtime.Client.attribution`, `models.withIdentity(_:)`, `ModelOptions(identity:)` |
+| `HarnessOptions.telemetry`, chord `createSqliteTelemetry()`, pi-telemetry `InMemoryTelemetryContext` | `Harness.open(telemetry:)`, `Telemetry.sqlite(at:)` / `.sqlite(database:)` / `.memory()`, `telemetry.traces(_:)`, `metrics(_:)` |
+| `TaskOptions.trace`, `links`; `TaskRecord.trace`, `SubmissionRecord.trace` | `createTask(…, trace:links:)` with `TaskTrace`, `TaskRecord.trace`, `SubmissionRecord.trace` |
+| `HarnessOptions.models` / `settings` as functions | `harness.replaceModels(_:)`, `harness.updateSettings(_:)` |
+| `settings.afterFailedRun`, `restartLimit`, `compaction.modelOverrides` | `Settings(afterFailedRun:restartLimit:)`, `Settings.Compaction(modelOverrides:)` |
+| `runtime.sleepUntil()`, `{ status: "sleeping" }`, `runtime.setTimer()`, `runtime.report(error, from)` | `run.sleep(until:then:)`, `NextState.sleeping(_:until:)`, `run.timer(after:_:)`, `run.report(_:from:)` |
+| `TaskRecord.restarts`, `harness.retryTask()`, blocked `restart_limit` | `TaskRecord.restarts`, `harness.retryTask(_:)`, `BlockedReason.restartLimit` |
+| `ToolExecutionApi.now()` | `ToolCallContext.now()` |
 | `JsonlStorage`, `models.refresh()`, `models.getAuth()` | `Storage.jsonl(at:)` / `.jsonl(in:directory:)`, `models.refresh()`, `models.isConfigured(_:)` |
 
 ## Tools
@@ -162,7 +171,9 @@ try await harness.install(Extension("dice", javaScript: source))
 ```
 
 The module is CommonJS and can `require` `@earendil-works/pi-durable` (and `/tools`, `/env`, `/tool-search`,
-`/codemode`), `@earendil-works/pi-codemode/portable`, `@earendil-works/pi-ai`, `@earendil-works/chord/context`, and `@earendil-works/chord/output` (bounded tool output). As in pi-durable, extension code is not sandboxed, so install only code you trust;
+`/codemode`), `@earendil-works/pi-codemode/portable`, `@earendil-works/pi-ai`, `@earendil-works/chord/context`, `@earendil-works/chord/output` (bounded tool output),
+`@earendil-works/chord/sqlite`, `@earendil-works/chord/telemetry-sqlite`, and `@earendil-works/pi-telemetry`. A document
+an extension defines needs a `checkpointWhen` policy (`() => false` stores every change as a delta). As in pi-durable, extension code is not sandboxed, so install only code you trust;
 it cannot reach PiDurableKit's own bridge to storage. Like any extension, install it again after a restart before
 resuming (`Harness.open(…, resume: false)`, `install`, `resume()`) so its pending tool calls continue.
 
@@ -278,6 +289,14 @@ let outcome = try await harness.waitForTask(id, as: [String].self)   // .complet
 Every phase transition is a checkpoint; after a crash the task continues from the last one. Pass `version:` and
 `migrate:` to upgrade live tasks, and `abort:` to undo a task's effects when it is aborted. `harness.taskGraph()`,
 `taskGraphs()`, and `inspect()` show what is running.
+
+A task waits for time by ending its phase asleep: `try await run.sleep(until: date, then: Step(phase: "remind"))`, or
+`.sleeping(checkpoint, until:)` from a commit. A sleeping task holds no invocation and survives restarts; once the harness
+clock reaches the date, it continues in the checkpoint's phase. `run.timer(after:_:)` paces work inside a phase.
+
+A task that crashes cut off five times in a row without committing a new state is parked rather than run again
+(`Settings(restartLimit:)`): `inspect()` shows it blocked with `.restartLimit`, `onReport` gets `.taskParked`, and
+`harness.retryTask(_:)` runs it again.
 
 ### More hooks and wraps
 
@@ -418,6 +437,22 @@ let settled = try await harness.submission(submission.id)?.wait()
 
 Install the same extensions after a restart so pending tool calls can resume.
 
+pi-durable 1.4 migrates a SQLite storage to its schema version 2 when it opens it, and earlier versions can't open a
+migrated database: once an app ships this version, its users' storages can't go back to an older PiDurableKit.
+
+`harness.wake()` says when the harness next needs a running process: `active` while work can run, `at` for the earliest
+sleep. With `Harness.open(onWake:)`, the harness arms no timer for sleeping tasks and tells the app instead, which can
+schedule a background task and call `harness.resume()` when it runs. `Harness.open(timer:)` arms the harness's other
+timers, for example with `HarnessTimer.dispatch(declineBackground: true)` in a process that should be free to suspend.
+
+`onReport` gets a `HarnessReport`: the message, and what it was about (`.sessionFailed`, `.taskFaulted`, `.taskParked`,
+`.extensionError`, `.hostError`, …), with the task and extension when known.
+
+`Harness.open(telemetry:)` records content-free spans, events, and metrics (submissions, task phases, entries, model
+requests, by ID) in a `Telemetry` recorder: `Telemetry.sqlite(at:)` keeps them for a week in a SQLite file,
+`Telemetry.memory()` in memory. Read them back with `telemetry.traces(_:)`, `trace(_:)`, and `metrics(_:)`;
+`Telemetry.schemas()` describes every name.
+
 A storage call that throws fails the harness, which closes itself: later calls throw `PiDurableError.sessionFailed`, and
 `harness.closed()` returns `.failed(message)`. Reopen it; reopening recovers from what was committed.
 
@@ -478,6 +513,8 @@ or encrypted file system. `Storage.custom(_:)` takes pi-durable's whole `Storage
 
 `Session.open(_:)` opens a plain pi-durable session (`createSession`) without agents or a task scheduler: atomic commits
 of conversations, entries, and documents, the same storage formats, and its commit stream.
+
+pi-durable's `IndexedDbStorage` is for browsers; JavaScriptCore has no IndexedDB, so it isn't available here.
 
 ## Models and providers
 
@@ -561,8 +598,9 @@ thinking levels apply to models that reason (Private Cloud Compute).
 
 - **Compaction.** The on-device window is 8,192 tokens (Private Cloud Compute's 32,768). pi-durable's default compaction
   keeps 20,000 tokens and could never compact such a window, so open the harness with
-  `Settings(compaction: .forContextWindow(…))`, sized for the smallest window your conversations use. An overflow says
-  so in its error.
+  `Settings(compaction: .forContextWindow(…))`. A harness that also serves large-window models can give these models
+  their own thresholds instead: `Settings.Compaction(modelOverrides: [.appleOnDevice: .forContextWindow(8192)])`. An
+  overflow says so in its error.
 - **Availability.** `FoundationModelsProvider.Model.isAvailable` (or `SystemLanguageModel.default.availability`) tells
   whether Apple Intelligence is on and the model downloaded; offer the model only then. A model still downloading, a
   rate limit, or an unreachable Private Cloud Compute fails with an error pi-durable retries; guardrail violations and
@@ -643,7 +681,7 @@ let root = try await harness.root(agent: AgentChange(model: faux.model))
 
 Use `Runtime(configuration:)` to give agents their own JavaScript thread or a custom `URLSessionConfiguration`, and pass it to `Models(runtime:)`.
 
-Providers see the app, not pi: requests carry its `User-Agent` (`Pelican/1.2 (iOS 27.0)`), and OpenAI's sign-in, OpenAI Codex's originator and xAI's referrer use its name, where pi-ai would say "pi". `Runtime.Client` holds them, from the app's bundle by default; set `Runtime.Configuration.client` to change them. `JS/build.mjs` routes pi-ai's `utils/pi-user-agent.js` to `JS/src/shims/client.ts` and patches the other places, failing the build if an update moves them. Radius's OAuth client ID (`pi-gateway`) stays: it's the ID Radius knows.
+Providers see the app, not pi: requests carry its `User-Agent` (`Pelican/1.2 (iOS 27.0)`) and its attribution headers, if it has any, instead of pi-durable's attribution to pi, and OpenAI's sign-in, OpenAI Codex's originator and xAI's referrer use its name, where pi-ai would say "pi". `Runtime.Client` holds them, from the app's bundle by default; set `Runtime.Configuration.client` to change them, with `attribution:` for OpenRouter's app title and referrer. Its `identity` (pi-ai `ClientIdentity`) goes to every `Models` and harness; `Harness.open(identity:)`, `models.withIdentity(_:)`, and `ModelOptions(identity:)` override it for a harness, a collection, or a request. `JS/build.mjs` patches the other places to `clientName()` from `JS/src/shims/client.ts`, failing the build if an update moves them. Radius's OAuth client ID (`pi-gateway`) stays: it's the ID Radius knows.
 
 ## Updating pi-durable
 

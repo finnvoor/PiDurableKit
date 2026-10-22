@@ -31,6 +31,10 @@ export interface TransactionHost {
     /** Stage writes that belong to every newly created or forked conversation, in its creating transaction. */
     conversationCreated(tx: Transaction, record: ConversationRecord): Promise<void>;
 }
+/** Internal run creation resolves submission carriers against staged records before reading storage. */
+export type TaskCreationOptions = TaskOptions & {
+    readonly submissionIds?: readonly SubmissionId[];
+};
 /** Defaults a commit binds to: `tx.createTask()` conversation and the task attributed to appended entries. */
 export type TransactionScope = {
     readonly conversationId?: ConversationId;
@@ -72,7 +76,7 @@ export declare class Transaction implements Tx {
     appendEntry<D extends JsonValue>(token: Entry<D>, conversationId: ConversationId, value: TypedEntryDraft<NoInfer<D>>): Promise<TypedEntry<D>>;
     createTask<I, S extends {
         phase: string;
-    }, R, H extends object>(task: Task<I, S, R, H>, input: I, options: TaskOptions): Promise<TaskId<R>>;
+    }, R, H extends object>(task: Task<I, S, R, H>, input: I, options: TaskCreationOptions): Promise<TaskId<R>>;
     /** Create a raw submission record with a fresh ID; no admission rules apply. */
     createSubmission(create: SubmissionCreate): Promise<SubmissionRecord>;
     /**

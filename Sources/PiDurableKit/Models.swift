@@ -18,6 +18,10 @@ public final class Models: Sendable {
     /// Where API keys and OAuth tokens are kept.
     public let credentials: any CredentialStore
     private let ready: Task<Void, Error>
+    /// For a view of another collection (``withIdentity(_:)``): the collection, which owns the JavaScript side.
+    private let owner: Models?
+    /// The identity of this view's direct requests, under each request's own.
+    let identity: ClientIdentity?
 
     /// - Parameters:
     ///   - credentials: Where credentials are kept. Use ``KeychainCredentialStore`` (`.keychain`) so OAuth sign-ins
@@ -35,6 +39,8 @@ public final class Models: Sendable {
     ) {
         self.runtime = runtime
         self.credentials = credentials
+        owner = nil
+        identity = nil
         let engine = runtime.engine
         let id = Self.makeID()
         self.id = id
@@ -46,7 +52,24 @@ public final class Models: Sendable {
         }
     }
 
+    /// The same collection, its direct requests identifying the app as `identity` says (pi-ai `withClientIdentity`),
+    /// under each request's own ``ModelOptions/identity``. Harness requests use the harness's identity instead.
+    public func withIdentity(_ identity: ClientIdentity) -> Models {
+        Models(viewOf: owner ?? self, identity: identity)
+    }
+
+    private init(viewOf models: Models, identity: ClientIdentity) {
+        runtime = models.runtime
+        id = models.id
+        credentials = models.credentials
+        ready = models.ready
+        owner = models
+        self.identity = identity
+    }
+
     deinit {
+        // A view leaves the collection to its owner.
+        guard owner == nil else { return }
         let engine = runtime.engine
         let id = id
         engine.send("models.dispose", ["id": id])

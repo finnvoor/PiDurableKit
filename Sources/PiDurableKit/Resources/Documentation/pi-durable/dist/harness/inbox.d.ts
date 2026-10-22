@@ -65,6 +65,6 @@ export declare function isStale(boundary: Boundary, entry: EntryDraft): boolean;
 export declare function removeInboxItem(tx: Tx, conversationId: ConversationId, id: SubmissionId): Promise<void>;
 /**
  * Withdraw every queued input of a conversation, as `Conversation.abort()` and abort cascades do: each settles
- * `unanswered` with `aborted` and leaves the inbox; queued writes stay for later placement.
+ * `unanswered` with `reason` (default `aborted`) and leaves the inbox; queued writes stay for later placement.
  */
-export declare function withdrawQueuedInputs(tx: Tx, conversationId: ConversationId): Promise<void>;
+export declare function withdrawQueuedInputs(tx: Tx, conversationId: ConversationId, reason?: string): Promise<void>;

@@ -22,6 +22,6 @@ let payment = TaskType<String, Step, String>(
 ```
 
 Install task types in an ``Extension``; create tasks in a ``Transaction``, or from a tool with
-``ToolCallContext/createTask(_:input:ownedByConversation:background:abandonOnRestart:)``. Child tasks are created with
+``ToolCallContext/createTask(_:input:ownedByConversation:background:abandonOnRestart:trace:links:)``. Child tasks are created with
 `ownedBy: current.id` and awaited with ``NextState/waiting(_:on:policy:)``. ``Harness/taskGraph()`` and
 ``Harness/inspect()`` show what is running.

@@ -29,17 +29,26 @@ public final class Runtime: Sendable {
     }
 
     /// How an app identifies itself to model providers, wherever pi-ai would say "pi": the `User-Agent` of every
-    /// provider request, the name a sign-in introduces the app by (OpenAI's sign-in page shows it), and the
-    /// originator or referrer a provider records it as (OpenAI Codex, xAI).
+    /// provider request, the name a sign-in introduces the app by (OpenAI's sign-in page shows it), the originator or
+    /// referrer a provider records it as (OpenAI Codex, xAI), and the attribution headers (OpenRouter), which a
+    /// harness would otherwise send for pi.
     public struct Client: Sendable, Hashable {
         /// The app's name, such as "Pelican".
         public var name: String
         /// The app's version, such as "1.2", for the `User-Agent`.
         public var version: String?
+        /// Who requests are attributed to, in providers' attribution headers; `nil` sends none.
+        public var attribution: ClientAttribution?
 
-        public init(name: String, version: String? = nil) {
+        public init(name: String, version: String? = nil, attribution: ClientAttribution? = nil) {
             self.name = name
             self.version = version
+            self.attribution = attribution
+        }
+
+        /// The identity of every request through this runtime: the app's `User-Agent` and attribution.
+        public var identity: ClientIdentity {
+            ClientIdentity(userAgent: .custom(userAgent), attribution: attribution.map { .app($0) } ?? .none, version: version)
         }
 
         /// The app, as its bundle names it (its display name, or else its name) with its version.
@@ -392,7 +401,8 @@ actor Engine {
 
         let client = configuration.client
         let clientJSON = (try? String(
-            decoding: JSONEncoder().encode(["name": client.name, "userAgent": client.userAgent]), as: UTF8.self)) ?? "{}"
+            decoding: JSONEncoder().encode(
+                ["name": JSONValue.string(client.name), "identity": try JSONValue(encoding: client.identity)]), as: UTF8.self)) ?? "{}"
         define("client", {
             clientJSON
         } as @convention(block) () -> String)

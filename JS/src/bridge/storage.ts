@@ -10,6 +10,7 @@ import { createEnvConformance, createStorageConformance } from "@earendil-works/
 import type { StorageConformanceAssertions } from "@earendil-works/pi-durable/testing";
 import { type Args, contextOf, emit, finish, host, hostSync, openStream, register, serializeError } from "./core.ts";
 import { environmentOf, SandboxEnv } from "./env.ts";
+import { hostTimer } from "./harness.ts";
 import { HostSqliteDatabase } from "./sqlite.ts";
 import { endings, type HarnessState, harnessState, harnesses } from "./state.ts";
 
@@ -183,6 +184,7 @@ register({
 		const storage = await openStorage(args.storage, context);
 		const session = createSession(storage, {
 			...(args.clock ? { now: () => hostSync<number>("harness.now", { harness: args.id }) } : {}),
+			...(args.timer ? { setTimer: hostTimer(args.id) } : {}),
 			...(args.documentRetentionMs == null
 				? {}
 				: { documentRetentionMs: args.documentRetentionMs >= 3.15e16 ? Number.POSITIVE_INFINITY : args.documentRetentionMs }),

@@ -118,12 +118,52 @@ public struct Settings: Codable, Sendable, Hashable {
         public var keepRecentTokens: Int?
         /// How far below the blocking threshold a background compaction starts; `0` disables it.
         public var backgroundTokens: Int?
+        /// Thresholds for particular models, so small- and large-window models can share a harness: each field an
+        /// override sets replaces the harness-wide one for that model (its own `modelOverrides` are ignored).
+        public var modelOverrides: [ModelRef: Compaction]?
 
-        public init(enabled: Bool? = nil, reserveTokens: Int? = nil, keepRecentTokens: Int? = nil, backgroundTokens: Int? = nil) {
+        public init(
+            enabled: Bool? = nil, reserveTokens: Int? = nil, keepRecentTokens: Int? = nil, backgroundTokens: Int? = nil,
+            modelOverrides: [ModelRef: Compaction]? = nil
+        ) {
             self.enabled = enabled
             self.reserveTokens = reserveTokens
             self.keepRecentTokens = keepRecentTokens
             self.backgroundTokens = backgroundTokens
+            self.modelOverrides = modelOverrides
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: AnyKey.self)
+            try container.encodeIfPresent(enabled, forKey: AnyKey("enabled"))
+            try container.encodeIfPresent(reserveTokens, forKey: AnyKey("reserveTokens"))
+            try container.encodeIfPresent(keepRecentTokens, forKey: AnyKey("keepRecentTokens"))
+            try container.encodeIfPresent(backgroundTokens, forKey: AnyKey("backgroundTokens"))
+            if let modelOverrides {
+                // Keyed by exact `provider/modelId`, as pi-durable matches them.
+                let keyed = Dictionary(modelOverrides.map { (model, policy) in
+                    var policy = policy
+                    policy.modelOverrides = nil
+                    return (model.description, policy)
+                }, uniquingKeysWith: { _, last in last })
+                try container.encode(keyed, forKey: AnyKey("modelOverrides"))
+            }
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: AnyKey.self)
+            enabled = try container.decodeIfPresent(Bool.self, forKey: AnyKey("enabled"))
+            reserveTokens = try container.decodeIfPresent(Int.self, forKey: AnyKey("reserveTokens"))
+            keepRecentTokens = try container.decodeIfPresent(Int.self, forKey: AnyKey("keepRecentTokens"))
+            backgroundTokens = try container.decodeIfPresent(Int.self, forKey: AnyKey("backgroundTokens"))
+            let keyed = try container.decodeIfPresent([String: Compaction].self, forKey: AnyKey("modelOverrides"))
+            modelOverrides = keyed.map { keyed in
+                Dictionary(keyed.compactMap { key, policy -> (ModelRef, Compaction)? in
+                    guard let slash = key.firstIndex(of: "/") else { return nil }
+                    let model = ModelRef(provider: ProviderID(String(key[..<slash])), modelId: String(key[key.index(after: slash)...]))
+                    return (model, policy)
+                }, uniquingKeysWith: { _, last in last })
+            }
         }
 
         /// Thresholds in proportion to a small context window, such as the on-device model's: pi-durable's defaults
@@ -167,6 +207,17 @@ public struct Settings: Codable, Sendable, Hashable {
         case oneAtATime = "one-at-a-time"
     }
 
+    /// What a run that fails with a model error, or without a model, does with the inputs queued behind it
+    /// (pi-durable `AfterFailedRun`).
+    public enum AfterFailedRun: String, Codable, Sendable {
+        /// Leave them queued until the next input or queued write (the default).
+        case keep
+        /// Start the next run with them, as an answer would.
+        case `continue`
+        /// Settle them `unanswered`, with reason `run_failed`.
+        case withdraw
+    }
+
     /// The default extension selection, by name; `nil` selects every installed extension in install order.
     public var extensions: [String]?
     public var stream: Stream?
@@ -181,6 +232,12 @@ public struct Settings: Codable, Sendable, Hashable {
     /// How long a loaded document that nothing observes stays in memory after its last read or write; the next access
     /// loads it from storage. Zero drops it right after use, `Duration.forever` keeps documents. Default ten minutes.
     public var documentRetention: Duration?
+    /// What a run that fails with a model error does with the inputs queued behind it. Default ``AfterFailedRun/keep``.
+    public var afterFailedRun: AfterFailedRun?
+    /// How many times in a row a crash, eviction, or reset may cut a task off without it changing its state before it is
+    /// parked (blocked with ``BlockedReason/restartLimit``) instead of run again; ``Harness/retryTask(_:)`` runs it
+    /// again. A close doesn't count. Default 5; `Int.max` never parks.
+    public var restartLimit: Int?
 
     public init(
         extensions: [String]? = nil,
@@ -192,10 +249,14 @@ public struct Settings: Codable, Sendable, Hashable {
         steeringMode: QueueMode? = nil,
         followUpMode: QueueMode? = nil,
         contextRetention: Duration? = nil,
-        documentRetention: Duration? = nil
+        documentRetention: Duration? = nil,
+        afterFailedRun: AfterFailedRun? = nil,
+        restartLimit: Int? = nil
     ) {
         self.contextRetention = contextRetention
         self.documentRetention = documentRetention
+        self.afterFailedRun = afterFailedRun
+        self.restartLimit = restartLimit
         self.extensions = extensions
         self.stream = stream
         self.retry = retry
@@ -218,6 +279,8 @@ public struct Settings: Codable, Sendable, Hashable {
         try container.encodeIfPresent(followUpMode, forKey: AnyKey("followUpMode"))
         try container.encodeIfPresent(contextRetention?.milliseconds, forKey: AnyKey("contextRetentionMs"))
         try container.encodeIfPresent(documentRetention?.milliseconds, forKey: AnyKey("documentRetentionMs"))
+        try container.encodeIfPresent(afterFailedRun, forKey: AnyKey("afterFailedRun"))
+        try container.encodeIfPresent(restartLimit, forKey: AnyKey("restartLimit"))
     }
 
     public init(from decoder: Decoder) throws {
@@ -236,6 +299,13 @@ public struct Settings: Codable, Sendable, Hashable {
             documentRetention = try container.decodeIfPresent(Double.self, forKey: AnyKey("documentRetentionMs")).map { Duration.milliseconds($0) } ?? .forever
         } else {
             documentRetention = nil
+        }
+        afterFailedRun = try container.decodeIfPresent(AfterFailedRun.self, forKey: AnyKey("afterFailedRun"))
+        // An unlimited restart limit arrives as `null`.
+        if container.contains(AnyKey("restartLimit")) {
+            restartLimit = try container.decodeIfPresent(Double.self, forKey: AnyKey("restartLimit")).map { $0 >= 9e15 ? Int.max : Int($0) } ?? .max
+        } else {
+            restartLimit = nil
         }
     }
 }

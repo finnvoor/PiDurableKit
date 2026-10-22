@@ -1,13 +1,15 @@
 import { type Context, type JsonValue } from "@earendil-works/chord";
-import type { CommitPublication, ConversationDocFamilyToken, ConversationDocToken, ConversationId, ConversationRecord, DocumentRecord, DocumentState, DocumentWatch, EntryId, JsonObject, RewindableConversationDocFamilyToken, RewindableConversationDocToken, Session, SessionDocFamilyToken, SessionDocToken, SessionEnd, Storage, TaskDocFamilyToken, TaskDocToken, TaskId, Tx } from "../types.ts";
+import type { CommitPublication, ConversationDocFamilyToken, ConversationDocToken, ConversationId, ConversationRecord, DocumentRecord, DocumentState, DocumentWatch, EntryId, JsonObject, ReportInfo, RewindableConversationDocFamilyToken, RewindableConversationDocToken, Session, SessionDocFamilyToken, SessionDocToken, SessionEnd, SetTimer, Storage, StorageWrite, TaskDocFamilyToken, TaskDocToken, TaskId, Tx } from "../types.ts";
 import { Transaction, type TransactionScope } from "./transaction.ts";
 /**
- * Open a Session kernel over one storage backend. `now` is the wall clock for task times; default `Date.now`. The first
+ * Open a Session kernel over one storage backend. `now` is the wall clock for task times; default `Date.now`.
+ * `setTimer` arms the timers that evict idle documents; default `setTimeout` (see `HarnessOptions.setTimer`). The first
  * error a Storage method throws fails the Session (`SessionFailed`); see `SessionImpl`.
  */
 export declare function createSession(storage: Storage, options?: {
     readonly now?: () => number;
     readonly documentRetentionMs?: number;
+    readonly setTimer?: SetTimer;
 }): Session;
 /** Internal, for tests: the retention of every Session that keeps the default, as a suite run with eviction at once. */
 export declare function setDefaultDocumentRetention(ms: number): void;
@@ -41,7 +43,7 @@ export declare class SessionImpl implements Session {
     } | undefined;
     /** Internal: rejects with `SessionFailed` the moment the Session fails, before work underway has ended; never resolves. */
     get failed(): Promise<never>;
-    constructor(storage: Storage, now?: () => number, documentRetentionMs?: () => number | undefined);
+    constructor(storage: Storage, now?: () => number, documentRetentionMs?: () => number | undefined, setTimer?: SetTimer);
     /** The Storage behind the failure guard; every component reads and writes through it. */
     protected get storage(): Storage;
     commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T>;
@@ -50,7 +52,7 @@ export declare class SessionImpl implements Session {
      * now; they read the error from `failure`. The Storage guard calls this; the Harness also calls it for a throw in its
      * scheduler's own commits.
      */
-    fail(error: unknown): void;
+    fail(error: unknown, context?: Context): void;
     /**
      * Internal commit exposing the concrete transaction and its internal operations, such as the reserved-ID root
      * bootstrap and task replacement. `scope` sets the default `tx.createTask()` conversation and the task attributed to
@@ -89,13 +91,22 @@ export declare class SessionImpl implements Session {
     snapshotAsOf<T extends JsonObject>(token: RewindableConversationDocToken<T>, conversationId: ConversationId, at: EntryId, context: Context): Promise<Readonly<T> | undefined>;
     snapshotAsOf<T extends JsonObject, I extends JsonValue>(token: RewindableConversationDocFamilyToken<T, I>, conversationId: ConversationId, key: string, at: EntryId, context: Context): Promise<Readonly<T> | undefined>;
     close(context: Context): Promise<void>;
-    /** Internal: the Session's failure, and errors of listeners, which never fail what ran them. A plain Session drops them. */
-    report(_error: unknown): void;
+    /**
+     * Internal: the Session's failure, and errors of listeners, which never fail what ran them; `info` defaults to a
+     * listener. A plain Session drops them.
+     */
+    report(_error: unknown, _info?: ReportInfo, _context?: Context): void;
     /**
      * Runs inside every transaction that creates or forks a conversation, after the conversation record is staged. A
      * plain Session stages nothing; a Harness stages its built-in documents.
      */
     protected conversationCreated(_tx: Transaction, _record: ConversationRecord): Promise<void>;
+    /**
+     * Internal, for `beforeClose()`: on the line, after every commit admitted before the seal has settled, write what
+     * `writes()` returns then straight to Storage. Nothing is published, since the Session is closing; a failed Session
+     * writes nothing.
+     */
+    protected writeAtClose(writes: () => readonly StorageWrite[]): Promise<void>;
     /** Runs after close seals admission and before the line closes Storage; must not reject. */
     protected beforeClose(): Promise<void>;
     /** Register a synchronous post-adoption listener. It must not block or call Session operations; a throw is reported. */

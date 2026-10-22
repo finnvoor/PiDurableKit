@@ -337,7 +337,9 @@ private struct Forecast: Codable, Sendable, Equatable {
     @Test func tasksSeeAndAbortTheirOwnedTasks() async throws {
         let sleeper = TaskType<Empty, At, String>("test.sleeper", version: 1, initial: { _ in At(phase: "sleep") }, abort: abortTask) {
             Phase("sleep") { run in
-                try await run.sleep(until: Date().addingTimeInterval(3600))
+                try await run.sleep(until: Date().addingTimeInterval(3600), then: At(phase: "woke"))
+            }
+            Phase("woke") { run in
                 try await run.commit { _, _ in .completed("woke") }
             }
         }

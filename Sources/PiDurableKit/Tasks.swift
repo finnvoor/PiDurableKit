@@ -37,7 +37,7 @@ public protocol TaskCheckpoint: Codable, Sendable {
 /// ```
 ///
 /// Install task types in an ``Extension``, then create tasks in a commit with
-/// ``Transaction/createTask(_:input:in:ownedBy:background:abandonOnRestart:)``. A phase runs again from its checkpoint after a crash, so it
+/// ``Transaction/createTask(_:input:in:ownedBy:background:abandonOnRestart:trace:links:)``. A phase runs again from its checkpoint after a crash, so it
 /// must be safe to repeat up to its commit; ``TaskRun/memo(_:default:)`` keeps values stable across reruns.
 public struct TaskType<Input: Codable & Sendable, Checkpoint: TaskCheckpoint, Result: Codable & Sendable>: Sendable {
     public typealias Handler = @Sendable (TaskRun<Input, Checkpoint, Result>) async throws -> Void
@@ -143,6 +143,9 @@ public enum NextState<Checkpoint: TaskCheckpoint, Result: Encodable & Sendable>:
     case running(Checkpoint)
     /// Run no code until the tasks in `on` are done, then continue in `checkpoint.phase`.
     case waiting(Checkpoint, on: [TaskID], policy: JoinPolicy)
+    /// Run no code until the harness clock reaches `until`, then continue in `checkpoint.phase`. The task holds no
+    /// invocation meanwhile, and the sleep survives restarts. An abort doesn't wait for it.
+    case sleeping(Checkpoint, until: Date)
     case completed(Result)
     /// An expected failure, recorded as the task's outcome.
     case failed(String, detail: JSONValue? = nil)
@@ -156,6 +159,11 @@ public enum NextState<Checkpoint: TaskCheckpoint, Result: Encodable & Sendable>:
             return [
                 "status": "waiting", "checkpoint": try JSONValue(encoding: checkpoint), "on": try JSONValue(encoding: on),
                 "policy": .string(policy.rawValue),
+            ]
+        case .sleeping(let checkpoint, let until):
+            return [
+                "status": "sleeping", "checkpoint": try JSONValue(encoding: checkpoint),
+                "until": .number(until.timeIntervalSince1970 * 1000),
             ]
         case .completed(let result):
             return ["status": "terminal", "outcome": ["status": "completed", "result": try JSONValue(encoding: result)]]
@@ -299,15 +307,32 @@ public struct TaskRun<Input: Codable & Sendable, Checkpoint: TaskCheckpoint, Res
         return Date(timeIntervalSince1970: milliseconds / 1000)
     }
 
-    /// Sleeps until the harness clock reaches `date`. Durable timers belong in a waiting state or a memo, since a
-    /// crash restarts the phase.
-    public func sleep(until date: Date) async throws {
-        try await handle.perform("scope.sleep", ["until": date.timeIntervalSince1970 * 1000])
+    /// Ends the phase asleep (pi-durable `runtime.sleepUntil()`): the task holds no invocation until the harness clock
+    /// reaches `date`, then continues in `checkpoint.phase`. The sleep survives restarts. Returns once the sleep is
+    /// stored, not when the time comes; return from the phase right after. To sleep together with other writes, return
+    /// ``NextState/sleeping(_:until:)`` from ``commit(_:)`` instead.
+    public func sleep(until date: Date, then checkpoint: Checkpoint) async throws {
+        try await handle.perform(
+            "scope.sleepUntil", ["until": date.timeIntervalSince1970 * 1000, "checkpoint": try JSONValue(encoding: checkpoint)])
     }
 
-    /// Reports a non-fatal problem to ``Harness/open(_:models:extensions:settings:environment:resume:onConversationCreated:clock:onReport:)``'s `onReport`.
-    public func report(_ message: String) async throws {
-        try await handle.perform("scope.report", ["message": message])
+    @available(*, unavailable, message: "A phase no longer waits: end it asleep with sleep(until:then:) and continue in the checkpoint's phase")
+    public func sleep(until date: Date) async throws {}
+
+    /// Calls `body` once after about `delay` on the harness's timer (pi-durable `runtime.setTimer()`), to pace work
+    /// inside the phase, such as throttled progress. Not durable: the phase's end disarms it. Returns a timer to cancel.
+    @discardableResult
+    public func timer(after delay: Duration, _ body: @escaping @Sendable () -> Void) async throws -> PhaseTimer {
+        let id = harness.engine.host.registerTimer(body)
+        let seconds = Double(delay.components.seconds) + Double(delay.components.attoseconds) / 1e18
+        try await handle.perform("scope.setTimer", ["timer": id, "delay": seconds * 1000])
+        return PhaseTimer(handle: handle, id: id, router: harness.engine.host)
+    }
+
+    /// Reports a non-fatal problem to the harness's `onReport` (pi-durable `runtime.report()`): about this task's own
+    /// code, or, with `from`, about extension code or a host callback it called.
+    public func report(_ message: String, from source: ReportSource? = nil) async throws {
+        try await handle.perform("scope.report", ["message": message, "from": try source.map { try JSONValue(encoding: $0) }])
     }
 
     /// A document, as committed. Defaults to the task's own (`scope: .task`).
@@ -369,6 +394,8 @@ public struct TaskRecord: Decodable, Sendable, Hashable, Identifiable {
         case pending
         case running
         case waiting(on: [TaskID], policy: JoinPolicy)
+        /// Asleep until the harness clock reaches `until`, holding no invocation.
+        case sleeping(until: Date)
         /// The outcome is decided, but work the task owns is still finishing.
         case completing(TaskOutcome<JSONValue>)
         case terminal(TaskOutcome<JSONValue>)
@@ -385,7 +412,7 @@ public struct TaskRecord: Decodable, Sendable, Hashable, Identifiable {
     public let background: Bool
     public let abortRequested: Bool
     /// Why the abort mark was set when not by an abort request: `restart` for a task abandoned after a restart
-    /// (``Transaction/createTask(_:input:in:ownedBy:background:abandonOnRestart:)``) or below one.
+    /// (``Transaction/createTask(_:input:in:ownedBy:background:abandonOnRestart:trace:links:)``) or below one.
     public let abortReason: String?
     /// Whether the task is aborted when a later harness starts scheduling, since its creator awaits it only in memory.
     public let abandonOnRestart: Bool
@@ -396,6 +423,13 @@ public struct TaskRecord: Decodable, Sendable, Hashable, Identifiable {
     public let status: Status
     /// The live checkpoint.
     public let checkpoint: JSONValue?
+    /// How many times in a row a crash, eviction, or reset cut the task off while it ran without it changing its state;
+    /// at ``Settings/restartLimit`` it is parked until ``Harness/retryTask(_:)``.
+    public let restarts: Int
+    /// The telemetry context that created the task, when the harness records with propagation.
+    public let trace: TelemetryCarrier?
+    /// Telemetry links attached to the task's first invocation.
+    public let links: [TelemetryCarrier]
 
     /// The outcome of a completing or terminal task.
     public var outcome: TaskOutcome<JSONValue>? {
@@ -420,7 +454,7 @@ public struct TaskRecord: Decodable, Sendable, Hashable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id, conversationId, kind, version, input, owner, background, abortRequested, abortReason, abandonOnRestart, state
-        case startedAt, endedAt
+        case startedAt, endedAt, restarts, trace, links
     }
 
     public init(from decoder: Decoder) throws {
@@ -437,6 +471,9 @@ public struct TaskRecord: Decodable, Sendable, Hashable, Identifiable {
         abandonOnRestart = try container.decodeIfPresent(Bool.self, forKey: .abandonOnRestart) ?? false
         startedAt = try container.decodeIfPresent(Double.self, forKey: .startedAt).map { Date(timeIntervalSince1970: $0 / 1000) }
         endedAt = try container.decodeIfPresent(Double.self, forKey: .endedAt).map { Date(timeIntervalSince1970: $0 / 1000) }
+        restarts = Int(try container.decodeIfPresent(Double.self, forKey: .restarts) ?? 0)
+        trace = try? container.decodeIfPresent(TelemetryCarrier.self, forKey: .trace)
+        links = (try? container.decodeIfPresent([TelemetryCarrier].self, forKey: .links)) ?? []
         let state = try container.decode(JSONValue.self, forKey: .state)
         checkpoint = state["checkpoint"]
         rawOutcome = state["outcome"]
@@ -447,6 +484,7 @@ public struct TaskRecord: Decodable, Sendable, Hashable, Identifiable {
             status = .waiting(
                 on: (try? (state["on"] ?? []).decode(as: [TaskID].self)) ?? [],
                 policy: JoinPolicy(rawValue: state["policy"]?.stringValue ?? "") ?? .allSettled)
+        case "sleeping": status = .sleeping(until: Date(timeIntervalSince1970: (state["until"]?.doubleValue ?? 0) / 1000))
         case "completing": status = .completing(try (state["outcome"] ?? [:]).decode(as: TaskOutcome<JSONValue>.self))
         default: status = .terminal(try (state["outcome"] ?? [:]).decode(as: TaskOutcome<JSONValue>.self))
         }
@@ -460,6 +498,8 @@ public struct TaskGraph: Decodable, Sendable, Hashable {
             case pending(phase: String)
             case running(phase: String)
             case waiting(phase: String, on: [TaskID], policy: JoinPolicy)
+            /// Asleep until the harness clock reaches `until`.
+            case sleeping(phase: String, until: Date)
             /// The decided outcome's status, such as `completed`.
             case completing(outcome: String)
         }
@@ -472,11 +512,13 @@ public struct TaskGraph: Decodable, Sendable, Hashable {
         public let background: Bool
         public let abortRequested: Bool
         public let state: State
+        /// Why the task can't run here, when it can't: no installed definition takes it, or the restart limit parked it.
+        public let blocked: BlockedReason?
         /// Conversations this task owns, such as subagents'.
         public let conversations: [ConversationID]
 
         private enum CodingKeys: String, CodingKey {
-            case id, kind, conversationId, owner, background, abortRequested, state, conversations
+            case id, kind, conversationId, owner, background, abortRequested, state, blocked, conversations
         }
 
         public init(from decoder: Decoder) throws {
@@ -488,6 +530,7 @@ public struct TaskGraph: Decodable, Sendable, Hashable {
             background = try container.decodeIfPresent(Bool.self, forKey: .background) ?? false
             abortRequested = try container.decodeIfPresent(Bool.self, forKey: .abortRequested) ?? false
             conversations = try container.decodeIfPresent([ConversationID].self, forKey: .conversations) ?? []
+            blocked = try container.decodeIfPresent(String.self, forKey: .blocked).map(BlockedReason.init(rawValue:))
             let state = try container.decode(JSONValue.self, forKey: .state)
             let phase = state["phase"]?.stringValue ?? ""
             switch state["status"]?.stringValue {
@@ -496,6 +539,8 @@ public struct TaskGraph: Decodable, Sendable, Hashable {
                 self.state = .waiting(
                     phase: phase, on: (try? (state["on"] ?? []).decode(as: [TaskID].self)) ?? [],
                     policy: JoinPolicy(rawValue: state["policy"]?.stringValue ?? "") ?? .allSettled)
+            case "sleeping":
+                self.state = .sleeping(phase: phase, until: Date(timeIntervalSince1970: (state["until"]?.doubleValue ?? 0) / 1000))
             case "completing": self.state = .completing(outcome: state["outcome"]?.stringValue ?? "")
             default: self.state = .pending(phase: phase)
             }
@@ -537,10 +582,13 @@ public struct HarnessInspection: Decodable, Sendable, Hashable {
             case ready(migrates: Bool)
             /// Waits for these live tasks.
             case waiting(on: [TaskID])
+            /// Sleeps until the harness clock reaches `until`.
+            case sleeping(until: Date)
             /// Its outcome is held until the work it owns drains.
             case completing
-            /// No installed definition can take it: `missing_task`, `task_too_old`, or `migration_failed`, with the
-            /// migration's error. Aborting it settles it as orphaned.
+            /// Can't run here: no installed definition can take it (`missing_task`, `task_too_old`, or
+            /// `migration_failed`, with the migration's error; aborting it settles it as orphaned), or the restart limit
+            /// parked it (`restart_limit`; ``Harness/retryTask(_:)`` runs it again).
             case blocked(reason: String, error: String?)
         }
 
@@ -569,6 +617,7 @@ public struct HarnessInspection: Decodable, Sendable, Hashable {
             case "running": self.state = .running
             case "ready": self.state = .ready(migrates: state["migrates"]?.boolValue ?? false)
             case "waiting": self.state = .waiting(on: (try? (state["on"] ?? []).decode(as: [TaskID].self)) ?? [])
+            case "sleeping": self.state = .sleeping(until: Date(timeIntervalSince1970: (state["until"]?.doubleValue ?? 0) / 1000))
             case "completing": self.state = .completing
             default:
                 let error = state["error"].flatMap { $0.isNull ? nil : ($0["message"]?.stringValue ?? $0.stringValue ?? $0.jsonString) }
@@ -585,7 +634,36 @@ public struct HarnessInspection: Decodable, Sendable, Hashable {
 
 /// A task's durable status (pi-durable `TaskState.status`), for ``TaskQuery``.
 public enum TaskStatus: String, Codable, Sendable, CaseIterable {
-    case pending, running, waiting, completing, terminal
+    case pending, running, waiting, sleeping, completing, terminal
+}
+
+/// Why a task can't run here (pi-durable `BlockedReason`).
+public struct BlockedReason: RawRepresentable, Hashable, Sendable, Codable, CustomStringConvertible {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public var description: String { rawValue }
+
+    /// No installed definition has the task's name.
+    public static let missingTask = BlockedReason(rawValue: "missing_task")
+    /// The installed definition is older than the task's version.
+    public static let taskTooOld = BlockedReason(rawValue: "task_too_old")
+    /// Migrating the task's state to the installed definition failed.
+    public static let migrationFailed = BlockedReason(rawValue: "migration_failed")
+    /// Crashes cut it off ``Settings/restartLimit`` times in a row; ``Harness/retryTask(_:)`` runs it again.
+    public static let restartLimit = BlockedReason(rawValue: "restart_limit")
+}
+
+/// A timer from ``TaskRun/timer(after:_:)``.
+public struct PhaseTimer: Sendable {
+    let handle: ScopeHandle
+    let id: Int
+    let router: HostRouter
+
+    /// Disarms the timer, if it hasn't fired.
+    public func cancel() async {
+        router.removeTimer(id)
+        try? await handle.perform("scope.clearTimer", ["timer": id])
+    }
 }
 
 /// A conversation's raw active transcript and the model context derived from it (pi-durable `ContextView`).

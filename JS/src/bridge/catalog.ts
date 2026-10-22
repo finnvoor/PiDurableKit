@@ -15,7 +15,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { getBuiltinModelDataGeneratedAt } from "@earendil-works/pi-ai/providers/all";
 import { personalizeOpenRouterCatalog } from "@earendil-works/pi-ai/providers/openrouter";
-import { getPiUserAgent } from "../shims/client.ts";
+import { formatUserAgent } from "@earendil-works/pi-ai";
+import { clientIdentity } from "../shims/client.ts";
 import { host } from "./core.ts";
 
 const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 4_000;
@@ -119,7 +120,7 @@ async function requestCatalog(
 	url.searchParams.set("types", REMOTE_CATALOG_MODEL_TYPES.join(","));
 	const headers: Record<string, string> = {
 		accept: "application/json",
-		"User-Agent": getPiUserAgent(),
+		"User-Agent": formatUserAgent(clientIdentity()),
 		...(validator ? { "if-none-match": validator } : {}),
 	};
 	for (let attempt = 0; ; attempt++) {

@@ -3,9 +3,21 @@ import type { Models } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "../env/index.ts";
 import type { SessionImpl } from "../session/session.ts";
 import type { Transaction } from "../session/transaction.ts";
-import type { ConversationId, Storage, TaskId, TaskOutcome, TaskRecord } from "../types.ts";
-import type { Agent, ConversationHandle, HarnessInspection, RegistryReader, RegistrySnapshot, Settings, SettledTask, TaskInspection } from "./types.ts";
+import type { Timers } from "../timers.ts";
+import type { ConversationId, ReportInfo, Storage, StorageWrite, TaskId, TaskOutcome, TaskRecord, TaskState } from "../types.ts";
+import type { Agent, ConversationHandle, HarnessInspection, HarnessOptions, RegistryReader, RegistrySnapshot, Settings, SettledTask, TaskInspection, Wake } from "./types.ts";
 type AnyTaskRecord = TaskRecord<JsonValue, JsonValue, JsonValue>;
+/** What `blockedReason()` reads of a task: the task graph keeps only this of each record. */
+export type BlockedSubject = Pick<AnyTaskRecord, "id" | "kind" | "version" | "abortRequested" | "abortReason" | "restarts"> & {
+    readonly status: TaskState<JsonValue, JsonValue>["status"];
+};
+/** The part of a record `blockedReason()` reads. */
+export declare function blockedSubject(record: AnyTaskRecord): BlockedSubject;
+/**
+ * Why a task cannot be reserved: no registered definition can take it, or it was cut off `restartLimit` times in a row.
+ * Derived from the registry, the settings, and the record's `restarts`.
+ */
+export type BlockedReason = "missing_task" | "task_too_old" | "migration_failed" | "restart_limit";
 /** Terminal outcomes the scheduler writes without running task code. */
 export type SchedulerOutcome = Extract<TaskOutcome<JsonValue>, {
     readonly status: "faulted" | "orphaned";
@@ -16,10 +28,12 @@ export type InvocationBinding = {
     check(): void;
 };
 export type TaskSchedulerOptions = {
+    readonly telemetry?: HarnessOptions["telemetry"];
     readonly session: SessionImpl;
     readonly storage: Storage;
     readonly registry: RegistryReader;
-    readonly models: Models;
+    /** The host's current model access (`HarnessOptions.models`); read at each access. */
+    readonly models: () => Models;
     /** Resolve a conversation's agent against a snapshot; the runtime calls it at most once per phase. */
     readonly agent: (conversationId: ConversationId, snapshot: RegistrySnapshot, context: Context) => Promise<Agent>;
     /** Resolve the settings; read at each access. */
@@ -27,7 +41,13 @@ export type TaskSchedulerOptions = {
     /** Build a conversation's environment with `HarnessOptions.env`. */
     readonly env: (conversationId: ConversationId, context: Context) => Promise<ExecutionEnv | undefined>;
     readonly now: () => number;
-    readonly report: (error: unknown) => void;
+    /** `HarnessOptions.onWake`: replaces the timer for sleeping tasks. */
+    readonly onWake: ((wake: Wake) => void) | undefined;
+    /** The host's timers (`HarnessOptions.setTimer`). */
+    readonly timers: Timers;
+    /** While closing, on the line after admitted commits settle, write what the callback returns straight to Storage. */
+    readonly writeAtClose: (writes: () => readonly StorageWrite[]) => Promise<void>;
+    readonly report: (error: unknown, info: ReportInfo, context?: Context) => void;
     /** Harness cleanup staged in the commit that makes an outcome the scheduler wrote itself terminal. */
     readonly settleOutcome: (tx: Transaction, record: AnyTaskRecord, outcome: SchedulerOutcome) => Promise<void>;
     /** Withdraw a conversation's queued inputs, for conversation abort and abort cascades. */
@@ -40,8 +60,9 @@ export type TaskSchedulerOptions = {
 /**
  * Durable task scheduler of one Harness.
  *
- * `#live` mirrors every committed non-terminal task record: pending, running, waiting, and completing. The synchronous
- * commit listener updates it on the Session line, so code running on the line reads exactly the committed state from it.
+ * `#live` mirrors every committed non-terminal task record: pending, running, waiting, sleeping, and completing. The
+ * synchronous commit listener updates it on the Session line, so code running on the line reads exactly the committed
+ * state from it.
  *
  * Tasks and conversations form one ownership tree (spec §5.5): a task's parent is its owner task, or its conversation;
  * a conversation's parent is its owner task, if any. Walks up that tree decide what reaches one task: a cancelling
@@ -61,13 +82,37 @@ export type TaskSchedulerOptions = {
 export declare class TaskScheduler {
     #private;
     constructor(options: TaskSchedulerOptions);
-    /** Load live tasks and change surviving `running` tasks back to `pending`. Dispatches nothing. */
+    /**
+     * Load live tasks and change surviving `running` tasks back to `pending`, counting the restart. Dispatches nothing. A
+     * task that reaches the restart limit this way is parked and reported.
+     */
     open(context: Context): Promise<void>;
-    /** Enable scheduling. Idempotent; the kick does nothing once closing. */
+    /**
+     * Enable scheduling, and make sleeping tasks that are due runnable: a host wakeup, such as an alarm, calls this.
+     * Idempotent; the kick does nothing once closing.
+     */
     resume(): void;
     /**
-     * Signal every invocation and wait for them; writes nothing. Close calls this after every close listener has run, so
-     * waits, watches, and streams a task holds end with the Session's reason, not as cancelled by its signal.
+     * Run a task parked by the restart limit again: clears its restart count and enables scheduling. Does nothing for a
+     * task that is not parked; rejects for an unknown one.
+     */
+    retry(id: TaskId, context: Context): Promise<void>;
+    /**
+     * Why a live task cannot run here, if it cannot: its definition (missing, too old, failed migration) or the restart
+     * limit. A running task, an abort-marked one, and one holding its outcome are never blocked.
+     */
+    blockedReason(record: BlockedSubject): BlockedReason | undefined;
+    /** Call `listener` when blocked reasons may have changed without a commit: a registry change or a failed migration. */
+    subscribeBlocked(listener: () => void): () => void;
+    /**
+     * When the Session next needs a process: `active` while some task can run now or is running, `at` for the earliest
+     * sleep not yet due. Synchronous, from memory; a task whose chain is not loaded yet counts as it would alone.
+     */
+    wake(): Wake;
+    /**
+     * Signal every invocation and wait for them, then write the tasks they ran back as `pending` (`writeAtClose`), as a
+     * close is not a crash. Close calls this after every close listener has run, so waits, watches, and streams a task
+     * holds end with the Session's reason, not as cancelled by its signal.
      */
     join(): Promise<void>;
     /**

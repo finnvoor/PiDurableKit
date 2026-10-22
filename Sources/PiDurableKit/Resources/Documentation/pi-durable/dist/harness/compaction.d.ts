@@ -1,6 +1,6 @@
 import type { Message, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ConversationId, EntryId, TaskId, Tx } from "../types.ts";
-import type { CompactionHooks, CompactionReason, CompactionResult, ContextView, ConversationStreamOptions, ModelRef } from "./types.ts";
+import type { CompactionHooks, CompactionPolicy, CompactionReason, CompactionResult, ContextView, ConversationStreamOptions, ModelRef, Settings } from "./types.ts";
 export type CompactionInput = {
     reason: CompactionReason;
     instructions?: string;
@@ -36,6 +36,8 @@ export declare const CompactionTask: import("../types.ts").Task<CompactionInput,
  * compaction); without one it is conversation-owned, and `background` unless it is manual.
  */
 export declare function createCompaction(tx: Tx, conversationId: ConversationId, input: CompactionInput, owner?: TaskId): Promise<TaskId<CompactionResult>>;
+/** The compaction policy for `model`: its `modelOverrides` entry over the harness-wide policy, field by field. */
+export declare function compactionPolicy(settings: Settings, model: ModelRef): CompactionPolicy;
 /**
  * Index in `view.entries` of the first entry a summary keeps, or `undefined` when there is nothing to compact
  * (spec §8.7). Walks back from the tail until `keepRecentTokens` are kept, then cuts at the first candidate at or after

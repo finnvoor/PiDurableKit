@@ -16,7 +16,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { type Args, closeHandle, emit, finish, handle, host, openHandle, openStream, register, watchEndError } from "./core.ts";
 import { draftOf, readDoc, watchArguments } from "./docs.ts";
 import { describeAgent, describeRegistry, describeSettings, describeTask, type HarnessState, resolveSettings, taskDefinition } from "./state.ts";
-import { runSwiftCommit, taskOwnership } from "./tx.ts";
+import { runSwiftCommit, taskOwnership, traceOptions } from "./tx.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: task runtimes are erased across Swift-defined tasks
 type AnyRuntime = TaskRuntime<any, any, any, any>;
@@ -67,6 +67,9 @@ function toolOf(scope: Scope): ToolExecutionApi {
 	if (scope.tool === undefined) throw new Error("Only tool calls can do this");
 	return scope.tool;
 }
+
+/** Timers task phases armed (`TaskRun.timer(after:_:)`), by Swift's ID: each disarms its timer. */
+const timers = new Map<number, () => void>();
 
 function runtimeOf(scope: Scope): AnyRuntime {
 	if (scope.runtime === undefined) throw new Error("Only task phases can do this");
@@ -173,6 +176,7 @@ register({
 				ownership: args.ownedByConversation ? { kind: "conversation" } : taskOwnership({ ownerTask: scope.tool.taskId }),
 				...(args.background ? { background: true } : {}),
 				...(args.abandonOnRestart == null ? {} : { abandonOnRestart: args.abandonOnRestart }),
+				...traceOptions(args),
 			},
 			context,
 		);
@@ -193,10 +197,27 @@ register({
 		});
 		return view;
 	},
-	"scope.now": (args) => runtimeOf(scopeOf(args)).now(),
-	"scope.sleep": (args, context) => runtimeOf(scopeOf(args)).sleep(args.until, context),
+	// The harness clock, for a task phase or a tool call (pi-durable `ToolExecutionApi.now()`).
+	"scope.now": (args) => {
+		const scope = scopeOf(args);
+		return (scope.tool ?? runtimeOf(scope)).now();
+	},
+	"scope.sleepUntil": (args, context) => runtimeOf(scopeOf(args)).sleepUntil(args.until, args.checkpoint, context),
+	"scope.setTimer": (args) => {
+		const scope = scopeOf(args);
+		const timer = args.timer as number;
+		const disarm = runtimeOf(scope).setTimer(() => {
+			timers.delete(timer);
+			void host("timer.fire", { timer }).catch(() => undefined);
+		}, args.delay as number);
+		timers.set(timer, disarm);
+	},
+	"scope.clearTimer": (args) => {
+		timers.get(args.timer as number)?.();
+		timers.delete(args.timer as number);
+	},
 	"scope.report": (args) => {
-		runtimeOf(scopeOf(args)).report(new Error(args.message));
+		runtimeOf(scopeOf(args)).report(new Error(args.message), args.from ?? undefined);
 	},
 
 	// Conversation handles (invocation-bound)
