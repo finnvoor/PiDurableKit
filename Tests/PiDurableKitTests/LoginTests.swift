@@ -261,6 +261,28 @@ extension MockServerTests {
         try await harness.close()
     }
 
+    /// Two requests that both find the token expiring: the first refreshes it, and the second, waiting its turn,
+    /// finds it fresh and leaves it as it is (it used to be deleted, signing the person out).
+    @Test func concurrentRequestsKeepTheRefreshedToken() async throws {
+        // A slow token endpoint, so the second request asks while the first is refreshing.
+        MockServer.handle(host: "platform.claude.com") { _ in
+            Thread.sleep(forTimeInterval: 0.5)
+            return .init(
+                headers: ["content-type": "application/json"],
+                chunks: [#"{"access_token":"sk-ant-oat01-access-4","refresh_token":"refresh-4","expires_in":3600,"token_type":"Bearer"}"#])
+        }
+        let refreshesBefore = MockServer.requests(to: "platform.claude.com").count
+        let store = InMemoryCredentialStore([
+            .anthropic: .oauth(accessToken: "stale", refreshToken: "refresh-1", expiresAt: .now.addingTimeInterval(-60))
+        ])
+        let models = Models(credentials: store, runtime: Self.runtime)
+        async let one = models.isConfigured(.anthropic)
+        async let two = models.isConfigured(.anthropic)
+        #expect(try await [one, two] == [true, true])
+        #expect(MockServer.requests(to: "platform.claude.com").count - refreshesBefore == 1)
+        #expect(await store.credential(for: .anthropic)?.json["refresh"] == "refresh-4")
+    }
+
     @Test func dismissingTheSignInPageCancels() async throws {
         let models = Models(runtime: Self.runtime)
         struct Dismissed: Error {}

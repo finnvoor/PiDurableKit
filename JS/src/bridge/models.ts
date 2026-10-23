@@ -84,6 +84,9 @@ class HostCredentialStore implements CredentialStore {
 		return this.#serialized(providerId, async () => {
 			const current = await this.read(providerId);
 			const next = await fn(current);
+			// `undefined` leaves the credential as it is (pi-ai's contract): an OAuth refresh returns it when another
+			// request refreshed the token first. Only `delete` removes one.
+			if (next === undefined) return current;
 			if (JSON.stringify(next) !== JSON.stringify(current)) await this.#write(providerId, next);
 			return next;
 		});
