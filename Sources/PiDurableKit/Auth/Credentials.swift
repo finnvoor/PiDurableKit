@@ -73,9 +73,13 @@ extension CredentialStore where Self == KeychainCredentialStore {
     /// Credentials kept in the Keychain, available after the first unlock so background work can refresh tokens.
     public static var keychain: KeychainCredentialStore { KeychainCredentialStore() }
 
-    /// Credentials kept in the Keychain under `service`, optionally shared through an access group.
-    public static func keychain(service: String, accessGroup: String? = nil) -> KeychainCredentialStore {
-        KeychainCredentialStore(service: service, accessGroup: accessGroup)
+    /// Credentials kept in the Keychain under `service`, optionally shared through an access group, with the
+    /// accessibility new and changed items get.
+    public static func keychain(
+        service: String = "PiDurableKit.credentials", accessGroup: String? = nil,
+        accessibility: KeychainCredentialStore.Accessibility = .afterFirstUnlockThisDeviceOnly
+    ) -> KeychainCredentialStore {
+        KeychainCredentialStore(service: service, accessGroup: accessGroup, accessibility: accessibility)
     }
 }
 
@@ -98,12 +102,33 @@ public actor InMemoryCredentialStore: CredentialStore {
 
 /// Credentials kept as generic passwords in the Keychain, one item per provider.
 public struct KeychainCredentialStore: CredentialStore {
+    /// When the Keychain lets the items be read, and whether they may leave the device. Both kinds are readable after
+    /// the first unlock, so background work can refresh tokens.
+    public enum Accessibility: Sendable, Hashable {
+        /// Only on this device: never in backups, never restored to another device.
+        case afterFirstUnlockThisDeviceOnly
+        /// Also in encrypted backups, so restoring a backup or moving to a new device keeps them.
+        case afterFirstUnlock
+
+        var value: CFString {
+            switch self {
+            case .afterFirstUnlockThisDeviceOnly: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            case .afterFirstUnlock: kSecAttrAccessibleAfterFirstUnlock
+            }
+        }
+    }
+
     public let service: String
     public let accessGroup: String?
+    public let accessibility: Accessibility
 
-    public init(service: String = "PiDurableKit.credentials", accessGroup: String? = nil) {
+    public init(
+        service: String = "PiDurableKit.credentials", accessGroup: String? = nil,
+        accessibility: Accessibility = .afterFirstUnlockThisDeviceOnly
+    ) {
         self.service = service
         self.accessGroup = accessGroup
+        self.accessibility = accessibility
     }
 
     private func query(_ provider: ProviderID? = nil) -> [CFString: Any] {
@@ -137,7 +162,7 @@ public struct KeychainCredentialStore: CredentialStore {
         let data = try JSONEncoder().encode(credential)
         let attributes: [CFString: Any] = [
             kSecValueData: data,
-            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrAccessible: accessibility.value,
         ]
         var status = SecItemUpdate(query(provider) as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
@@ -145,6 +170,27 @@ public struct KeychainCredentialStore: CredentialStore {
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw KeychainError(status: status) }
+    }
+
+    /// Gives every credential already stored this store's ``accessibility``, such as after changing it: items keep
+    /// the accessibility they were written with until they're written again. Returns how many items changed.
+    @discardableResult
+    public func migrateAccessibility() throws -> Int {
+        var changed = 0
+        for provider in try providers() {
+            var query = query(provider)
+            query[kSecReturnAttributes] = true
+            query[kSecMatchLimit] = kSecMatchLimitOne
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            guard status == errSecSuccess, let attributes = result as? [CFString: Any] else { continue }
+            guard (attributes[kSecAttrAccessible] as? String) != accessibility.value as String else { continue }
+            let update = SecItemUpdate(
+                self.query(provider) as CFDictionary, [kSecAttrAccessible: accessibility.value] as CFDictionary)
+            guard update == errSecSuccess else { throw KeychainError(status: update) }
+            changed += 1
+        }
+        return changed
     }
 
     public func providers() throws -> [ProviderID] {
