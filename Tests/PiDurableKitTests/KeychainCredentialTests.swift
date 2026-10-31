@@ -72,4 +72,25 @@ struct KeychainCredentialTests {
     @Test func migratingAnEmptyStoreChangesNothing() throws {
         #expect(try KeychainCredentialStore(service: service + ".empty", accessibility: .afterFirstUnlock).migrateAccessibility() == 0)
     }
+
+    @Test func synchronizableAndLocalItemsAreSeparate() throws {
+        let local = KeychainCredentialStore(service: service, accessibility: .afterFirstUnlock)
+        let synced = KeychainCredentialStore(service: service, synchronizable: true)
+        defer {
+            for store in [local, synced] { for provider in (try? store.providers()) ?? [] { try? store.setCredential(nil, for: provider) } }
+        }
+        #expect(synced.accessibility == .afterFirstUnlock)
+        try synced.setCredential(.apiKey("synced"), for: ProviderID("openai"))
+        try local.setCredential(.oauth(accessToken: "a", refreshToken: "r", expiresAt: .now), for: ProviderID("anthropic"))
+        #expect(try synced.providers() == [ProviderID("openai")])
+        #expect(try local.providers() == [ProviderID("anthropic")])
+        #expect(try local.credential(for: ProviderID("openai")) == nil)
+        #expect(try synced.credential(for: ProviderID("openai")) == .apiKey("synced"))
+        // The same provider in both: each keeps its own.
+        try local.setCredential(.apiKey("local"), for: ProviderID("openai"))
+        #expect(try synced.credential(for: ProviderID("openai")) == .apiKey("synced"))
+        #expect(try local.credential(for: ProviderID("openai")) == .apiKey("local"))
+        try synced.setCredential(nil, for: ProviderID("openai"))
+        #expect(try local.credential(for: ProviderID("openai")) == .apiKey("local"))
+    }
 }

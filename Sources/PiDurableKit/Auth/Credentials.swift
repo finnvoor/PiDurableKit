@@ -77,9 +77,11 @@ extension CredentialStore where Self == KeychainCredentialStore {
     /// accessibility new and changed items get.
     public static func keychain(
         service: String = "PiDurableKit.credentials", accessGroup: String? = nil,
-        accessibility: KeychainCredentialStore.Accessibility = .afterFirstUnlockThisDeviceOnly
+        accessibility: KeychainCredentialStore.Accessibility = .afterFirstUnlockThisDeviceOnly,
+        synchronizable: Bool = false
     ) -> KeychainCredentialStore {
-        KeychainCredentialStore(service: service, accessGroup: accessGroup, accessibility: accessibility)
+        KeychainCredentialStore(
+            service: service, accessGroup: accessGroup, accessibility: accessibility, synchronizable: synchronizable)
     }
 }
 
@@ -120,15 +122,22 @@ public struct KeychainCredentialStore: CredentialStore {
 
     public let service: String
     public let accessGroup: String?
+    /// The accessibility of local items; synchronizable items are always ``Accessibility/afterFirstUnlock``, since
+    /// an item that syncs can't be kept to one device.
     public let accessibility: Accessibility
+    /// Whether this store's items sync to the person's other devices through iCloud Keychain (end-to-end encrypted;
+    /// kept locally when iCloud Keychain is off). Synchronizable and local items are separate: a store sees only its
+    /// own kind, so one of each over the same service can hold, say, API keys that sync and sign-ins that don't.
+    public let synchronizable: Bool
 
     public init(
         service: String = "PiDurableKit.credentials", accessGroup: String? = nil,
-        accessibility: Accessibility = .afterFirstUnlockThisDeviceOnly
+        accessibility: Accessibility = .afterFirstUnlockThisDeviceOnly, synchronizable: Bool = false
     ) {
         self.service = service
         self.accessGroup = accessGroup
-        self.accessibility = accessibility
+        self.accessibility = synchronizable ? .afterFirstUnlock : accessibility
+        self.synchronizable = synchronizable
     }
 
     private func query(_ provider: ProviderID? = nil) -> [CFString: Any] {
@@ -136,6 +145,7 @@ public struct KeychainCredentialStore: CredentialStore {
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecUseDataProtectionKeychain: true,
+            kSecAttrSynchronizable: synchronizable ? kCFBooleanTrue! : kCFBooleanFalse!,
         ]
         if let provider { query[kSecAttrAccount] = provider.rawValue }
         if let accessGroup { query[kSecAttrAccessGroup] = accessGroup }
